@@ -5,11 +5,20 @@ id = "org.dreamweave.plugin-assets"
 version = "0.1.0"
 jess_api = "1"
 include = ["src"]
+tests = ["tests/run.luau"]
 
 [dependencies]
 "org.dreamweave.tes3" = "0.1"
 "org.dreamweave.vfs" = "0.1"
 "org.dreamweave.nif-assets" = "0.1"
+
+# The suite builds its models with the NIF module, packs an archive with the archive module, and
+# hands the package what a real load order opens: a Context's plugins and its VFS.
+[dev-dependencies]
+"org.dreamweave.nif" = "0.1"
+"org.dreamweave.dream-archive" = "0.1"
+"org.dreamweave.load-order" = "0.1"
+"org.dreamweave.openmw" = "0.1"
 
 [modules]
 "@plugin-assets" = "src/init.luau"

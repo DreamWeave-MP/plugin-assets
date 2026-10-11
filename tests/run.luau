@@ -1,0 +1,1108 @@
+--!strict
+--!native
+-- plugin-assets' cases, on plugins built with `@tes3` and data folders built in scratch. The first
+-- group is jess's own contract for `jess.plugin.assets` (`contracts/assets` in jess's history):
+-- the same model, texture, and plugin, and the report it pinned. The rest take one asset kind,
+-- finding, or load-order rule each. Textures, sounds, and scripts are only names here, since a
+-- lookup never opens one; models are real, since each one found is checked.
+local archive = require '@dream-archive'
+local loadOrder = require '@load-order'
+local nif = require '@nif'
+local openmw = require '@openmw'
+local pluginAssets = require '@plugin-assets'
+local tes3 = require '@tes3'
+local test = require '@jess/test'
+local vfs = require '@vfs'
+
+local expect = test.expect
+local suite = test.new()
+local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the suite needs a host-owned scratchRoot')
+
+local Triangle = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } }
+
+--- A model: `triangles` triangles (one by default) under a root node, drawn with `texture` when
+--- one is named.
+local function shape(texture: string?, triangles: number?): buffer
+  local file = nif.new()
+  local root = file:insert { type = 'NiNode', name = 'Rock' }
+  file.roots = { root }
+  file:shape {
+    parent = root,
+    vertices = Triangle,
+    triangles = table.create(triangles or 1, { 0, 1, 2 }),
+    texture = texture,
+  }
+
+  return file:save()
+end
+
+--- A model the NIF check has a `broken` and a `collision` finding for: an editor marker that
+--- draws, and a lowercase `NCc`, which turns collision off.
+local function defects(): buffer
+  local file = nif.new()
+  local root = file:insert { type = 'NiNode', name = 'Root' }
+  local lowercase = file:insert { type = 'NiStringExtraData', value = 'NCc', bytesRemaining = 7 }
+  local rootNode = file:record(root) :: { [string]: unknown }
+  rootNode.extraData = lowercase
+  file:shape {
+    name = 'Tri EditorMarker 0',
+    vertices = Triangle,
+    triangles = { { 0, 1, 2 } },
+    parent = root,
+  }
+  file.roots = { root }
+
+  return file:save()
+end
+
+--- A plugin holding `records`, as `@tes3` builds one: a version 1.3 header, or `version`.
+local function plugin(records: { tes3.Value }, version: number?): tes3.Plugin
+  local built = tes3.new()
+  for _, record in records do
+    built:insertValue(built:count(), record)
+  end
+
+  built:updateRecordCount()
+  if not version then return built end
+
+  -- The version is the first field of the header's HEDR, after two eight-byte headers.
+  local bytes = built:save()
+  buffer.writef32(bytes, 24, version)
+  return tes3.open(bytes)
+end
+
+--- A fresh data folder under the scratch root holding `files` by their paths below it, and the
+--- VFS over it.
+local function data(name: string, files: { [string]: string | buffer }): (string, vfs.VFS)
+  local root = jess.fs.join(scratch, 'plugin-assets', name)
+  if jess.fs.exists(root) then jess.fs.remove(root) end
+
+  jess.fs.createDir(root)
+  for path, bytes in files do
+    jess.fs.write(jess.fs.join(root, path), bytes)
+  end
+
+  return root, vfs.VFS.fromDirectories { root }
+end
+
+--- The report for one plugin named `Test.esp` holding `records`, over a data folder of `files`.
+local function check(
+  name: string,
+  records: { tes3.Value },
+  files: { [string]: string | buffer }?,
+  options: pluginAssets.Options?
+): pluginAssets.Report
+  local _, lookup = data(name, files or {})
+  return pluginAssets.check({ { name = 'Test.esp', plugin = plugin(records) } }, lookup, options)
+end
+
+--- What each finding of a report says: `code TYPE id: message`.
+local function said(report: pluginAssets.Report): { string }
+  local out = {}
+  for _, finding in report.findings do
+    table.insert(out, `{finding.code} {finding.recordType} {finding.id}: {finding.message}`)
+  end
+
+  return out
+end
+
+--- Each reference of a report as `kind path -> resolved`.
+local function led(report: pluginAssets.Report): { string }
+  local out = {}
+  for _, reference in report.references do
+    table.insert(out, `{reference.kind} {reference.path} -> {reference.resolved or 'nothing'}`)
+  end
+
+  return out
+end
+
+local function meshPaths(report: pluginAssets.Report): { string }
+  local out = {}
+  for _, mesh in report.meshes do
+    table.insert(out, mesh.path)
+  end
+
+  return out
+end
+
+local function static(id: string, mesh: string): tes3.Value
+  return { type = 'Static', id = id, mesh = mesh }
+end
+
+local RockStats = {
+  records = 5,
+  reachableRecords = 5,
+  nodes = 1,
+  shapes = 1,
+  vertices = 3,
+  triangles = 1,
+  collisionTriangles = 1,
+  controllers = 0,
+  embeddedTextures = 0,
+  embeddedTextureBytes = 0,
+  skinned = false,
+}
+
+local Rocks: { tes3.Value } = {
+  static('jess_rock', 'jess\\rock.nif'),
+  static('jess_missing', 'jess\\missing.nif'),
+  { type = 'MiscItem', id = 'jess_coin', mesh = 'jess\\rock.nif', icon = 'm\\coin.tga' },
+}
+
+local RockFiles: { [string]: string | buffer } = {
+  ['meshes/jess/rock.nif'] = shape 'tx_rock.tga',
+  ['textures/tx_rock.dds'] = 'DDS ',
+}
+
+local MissingMesh: pluginAssets.Finding = {
+  severity = 'missingAsset',
+  code = 'missingMesh',
+  message = 'model "jess\\missing.nif" not found at meshes/jess/missing.nif',
+  plugin = 'Rocks.esp',
+  recordType = 'STAT',
+  id = 'jess_missing',
+  path = 'jess\\missing.nif',
+}
+
+local MissingIcon: pluginAssets.Finding = {
+  severity = 'missingAsset',
+  code = 'missingIcon',
+  message = 'icon "m\\coin.tga" not found (tried icons/m/coin.dds, icons/m/coin.tga, icons/coin.dds, icons/coin.tga)',
+  plugin = 'Rocks.esp',
+  recordType = 'MISC',
+  id = 'jess_coin',
+  path = 'm\\coin.tga',
+}
+
+-- `contracts/assets/assets.luau` and the JSON it printed. What differs: the plugin is handed over
+-- opened and named, with the VFS over its folder, where the old call took a plugin, path, or name
+-- and found the folder itself; so the contract's two refusals about what was passed (`expected
+-- plugins, paths, or names`, `checking the load order needs an OpenMW config`) have nothing to
+-- refuse here.
+suite.describe('jess.plugin.assets\' contract', function()
+  suite.it('reports the references, findings, model, and files of Rocks.esp', function()
+    local root, lookup = data('contract', RockFiles)
+    local model = jess.fs.join(root, 'meshes/jess/rock.nif')
+    local texture = jess.fs.join(root, 'textures/tx_rock.dds')
+    local report = pluginAssets.check({ { name = 'Rocks.esp', plugin = plugin(Rocks) } }, lookup)
+    expect(report).toEqual {
+      summary = {
+        plugins = { 'Rocks.esp' },
+        unreadablePlugins = 0,
+        references = 4,
+        files = 3,
+        missing = 2,
+        meshesChecked = 1,
+        meshesWontLoad = 0,
+        byCode = { missingIcon = 1, missingMesh = 1 },
+        meshesByCode = {},
+      },
+      findings = { MissingMesh, MissingIcon },
+      references = {
+        {
+          plugin = 'Rocks.esp',
+          recordType = 'STAT',
+          id = 'jess_rock',
+          kind = 'mesh',
+          path = 'jess\\rock.nif',
+          resolved = 'meshes/jess/rock.nif',
+          source = model,
+        },
+        {
+          plugin = 'Rocks.esp',
+          recordType = 'STAT',
+          id = 'jess_missing',
+          kind = 'mesh',
+          path = 'jess\\missing.nif',
+        },
+        {
+          plugin = 'Rocks.esp',
+          recordType = 'MISC',
+          id = 'jess_coin',
+          kind = 'mesh',
+          path = 'jess\\rock.nif',
+          resolved = 'meshes/jess/rock.nif',
+          source = model,
+        },
+        { plugin = 'Rocks.esp', recordType = 'MISC', id = 'jess_coin', kind = 'icon', path = 'm\\coin.tga' },
+      },
+      meshes = {
+        {
+          path = 'meshes/jess/rock.nif',
+          source = model,
+          version = '4.0.0.2',
+          game = 'Morrowind',
+          deeplyChecked = true,
+          -- A model with nothing wrong has no findings and no `worst` at all.
+          findings = {},
+          textures = { { path = 'tx_rock.tga', resolved = 'textures/tx_rock.dds', source = texture } },
+          stats = RockStats,
+          usedBy = { 'STAT jess_rock', 'MISC jess_coin' },
+        },
+      },
+      usedFiles = {
+        { file = model, path = 'meshes/jess/rock.nif', inArchive = false },
+        { file = texture, path = 'textures/tx_rock.dds', inArchive = false },
+      },
+    }
+  end)
+
+  suite.it('keeps the findings without the references, and leaves the models alone when told to', function()
+    local _, lookup = data('contract-options', RockFiles)
+    local inputs = { { name = 'Rocks.esp', plugin = plugin(Rocks) } }
+    local findingsOnly = pluginAssets.check(inputs, lookup, { references = false })
+    expect(findingsOnly.references).toEqual {}
+    expect(findingsOnly.usedFiles).toEqual {}
+    expect(findingsOnly.findings).toEqual { MissingMesh, MissingIcon }
+    expect(findingsOnly.summary.references).toBe(4)
+
+    local noMeshes = pluginAssets.check(inputs, lookup, { meshes = false })
+    expect(noMeshes.summary.meshesChecked).toBe(0)
+    expect(noMeshes.meshes).toEqual {}
+    expect(#noMeshes.usedFiles).toBe(1)
+
+    local shown = pluginAssets.check(inputs, lookup, { show = 'wontLoad' })
+    expect(shown.findings).toEqual {}
+    expect(shown.summary.missing).toBe(2)
+  end)
+
+  suite.it('refuses a severity it doesn\'t know', function()
+    local _, lookup = data('contract-refusal', {})
+    expect(function() pluginAssets.check({}, lookup, { show = 'bad' :: any }) end).toThrow(
+      'unknown severity \'bad\': expected wontLoad, broken, missingAsset, collision, performance, or info'
+    )
+  end)
+end)
+
+suite.describe('references', function()
+  suite.it('use a model as written under meshes, with no search', function()
+    local report = check('models', {
+      static('found', 'X\\Rock.NIF'),
+      static('elsewhere', 'rock.nif'),
+      { type = 'Bodypart', id = 'part', mesh = 'x\\rock.nif' },
+    }, { ['meshes/x/rock.nif'] = shape() })
+
+    expect(led(report)).toEqual {
+      'mesh X\\Rock.NIF -> meshes/x/rock.nif',
+      'mesh rock.nif -> nothing',
+      'mesh x\\rock.nif -> meshes/x/rock.nif',
+    }
+    expect(said(report)).toEqual { 'missingMesh STAT elsewhere: model "rock.nif" not found at meshes/rock.nif' }
+    expect(report.summary.files).toBe(2)
+    expect(report.summary.missing).toBe(1)
+  end)
+
+  suite.it('read a mesh and an icon from every item type, and a mesh from what OpenMW animates', function()
+    local records: { tes3.Value } = {}
+    for _, name in {
+      'MiscItem',
+      'Weapon',
+      'Armor',
+      'Clothing',
+      'RepairItem',
+      'Apparatus',
+      'Lockpick',
+      'Probe',
+      'Ingredient',
+      'Alchemy',
+      'Book',
+      'Light',
+    } do
+      table.insert(records, { type = name, id = name, mesh = `{name}.nif`, icon = `{name}.tga` })
+    end
+
+    for _, name in { 'Door', 'Container', 'Activator', 'Creature', 'Npc' } do
+      table.insert(records, { type = name, id = name, mesh = `{name}.nif` })
+    end
+
+    local report = check('items', records, nil, { meshes = false })
+    expect(report.summary.references).toBe(12 * 2 + 5)
+
+    local kinds: { [string]: number } = {}
+    for _, reference in report.references do
+      local kind = `{reference.recordType} {reference.kind}`
+      kinds[kind] = (kinds[kind] or 0) + 1
+    end
+
+    expect(kinds).toEqual {
+      ['MISC mesh'] = 1,
+      ['MISC icon'] = 1,
+      ['WEAP mesh'] = 1,
+      ['WEAP icon'] = 1,
+      ['ARMO mesh'] = 1,
+      ['ARMO icon'] = 1,
+      ['CLOT mesh'] = 1,
+      ['CLOT icon'] = 1,
+      ['REPA mesh'] = 1,
+      ['REPA icon'] = 1,
+      ['APPA mesh'] = 1,
+      ['APPA icon'] = 1,
+      ['LOCK mesh'] = 1,
+      ['LOCK icon'] = 1,
+      ['PROB mesh'] = 1,
+      ['PROB icon'] = 1,
+      ['INGR mesh'] = 1,
+      ['INGR icon'] = 1,
+      ['ALCH mesh'] = 1,
+      ['ALCH icon'] = 1,
+      ['BOOK mesh'] = 1,
+      ['BOOK icon'] = 1,
+      -- A light is carried and held, so its model is one OpenMW animates.
+      ['LIGH animatedMesh'] = 1,
+      ['LIGH icon'] = 1,
+      ['DOOR animatedMesh'] = 1,
+      ['CONT animatedMesh'] = 1,
+      ['ACTI animatedMesh'] = 1,
+      ['CREA animatedMesh'] = 1,
+      ['NPC_ animatedMesh'] = 1,
+    }
+
+    -- The mesh comes before the icon, record by record.
+    expect(report.references[1].kind).toBe 'mesh'
+    expect(report.references[2].kind).toBe 'icon'
+  end)
+
+  suite.it('skip a field that is empty or only spaces, and types that name no file', function()
+    local report = check('empty', {
+      { type = 'MiscItem', id = 'bare', mesh = '', icon = ' \t' },
+      { type = 'GlobalVariable', id = 'global', value = { type = 'Float', data = 1 } },
+      { type = 'Cell', name = 'Somewhere', data = { flags = 'IS_INTERIOR', grid = { 0, 0 } } },
+    })
+    expect(report.summary.references).toBe(0)
+    expect(report.findings).toEqual {}
+  end)
+
+  suite.it('search for an icon, preferring .dds, then by its file name', function()
+    local report = check('icons', {
+      { type = 'MiscItem', id = 'dds', icon = 'm\\Coin.tga' },
+      { type = 'MiscItem', id = 'written', icon = 'm\\gem.tga' },
+      { type = 'MiscItem', id = 'named', icon = 'c:\\data\\Icons\\w\\key.bmp' },
+      { type = 'MiscItem', id = 'flat', icon = 'deep\\down\\ring.tga' },
+    }, {
+      ['icons/m/coin.dds'] = '',
+      ['icons/m/gem.tga'] = '',
+      ['icons/w/key.dds'] = '',
+      ['icons/ring.tga'] = '',
+    })
+
+    expect(led(report)).toEqual {
+      'icon m\\Coin.tga -> icons/m/coin.dds',
+      'icon m\\gem.tga -> icons/m/gem.tga',
+      'icon c:\\data\\Icons\\w\\key.bmp -> icons/w/key.dds',
+      'icon deep\\down\\ring.tga -> icons/ring.tga',
+    }
+    expect(report.findings).toEqual {}
+  end)
+
+  suite.it('need a large icon beside a magic effect\'s icon, and find its texture', function()
+    local effect = {
+      type = 'MagicEffect',
+      effectId = 'WaterBreathing',
+      icon = 's\\Tx_S_Wb.tga',
+      texture = 'vfx_wb.tga',
+    }
+    local missing = check('effect-missing', { effect })
+    expect(said(missing)).toEqual {
+      -- The large icon is looked for first; an effect is named by what it does.
+      'missingBigIcon MGEF WaterBreathing: large icon for "s\\Tx_S_Wb.tga" not found (tried icons/s/b_tx_s_wb.dds, icons/s/b_tx_s_wb.tga, icons/b_tx_s_wb.dds, icons/b_tx_s_wb.tga)',
+      'missingIcon MGEF WaterBreathing: icon "s\\Tx_S_Wb.tga" not found (tried icons/s/tx_s_wb.dds, icons/s/tx_s_wb.tga, icons/tx_s_wb.dds, icons/tx_s_wb.tga)',
+      'missingTexture MGEF WaterBreathing: texture "vfx_wb.tga" not found (tried textures/vfx_wb.dds, textures/vfx_wb.tga)',
+    }
+    -- One file, missing twice over, is one missing file.
+    expect(missing.summary.missing).toBe(2)
+    expect(missing.summary.byCode).toEqual { missingBigIcon = 1, missingIcon = 1, missingTexture = 1 }
+
+    local found = check('effect-found', { effect }, {
+      ['icons/s/tx_s_wb.dds'] = '',
+      ['icons/s/b_tx_s_wb.dds'] = '',
+      ['textures/vfx_wb.dds'] = '',
+    })
+    expect(found.findings).toEqual {}
+    expect(led(found)).toEqual {
+      'effectIcon s\\Tx_S_Wb.tga -> icons/s/tx_s_wb.dds',
+      'texture vfx_wb.tga -> textures/vfx_wb.dds',
+    }
+  end)
+
+  suite.it('search for a birthsign\'s and a land texture\'s texture, and say when it isn\'t a .dds', function()
+    local report = check('textures', {
+      { type = 'Birthsign', id = 'sign', texture = 'Sign.tga' },
+      { type = 'LandscapeTexture', id = 'sand', index = 1, fileName = 'tx_sand.tga' },
+      { type = 'LandscapeTexture', id = 'gone', index = 2, fileName = 'tx_gone.tga' },
+    }, { ['textures/sign.dds'] = '', ['textures/tx_sand.tga'] = '' })
+
+    expect(led(report)).toEqual {
+      'texture Sign.tga -> textures/sign.dds',
+      'texture tx_sand.tga -> textures/tx_sand.tga',
+      'texture tx_gone.tga -> nothing',
+    }
+
+    expect(report.findings).toEqual {
+      {
+        severity = 'missingAsset',
+        code = 'missingTexture',
+        message = 'texture "tx_gone.tga" not found (tried textures/tx_gone.dds, textures/tx_gone.tga)',
+        plugin = 'Test.esp',
+        recordType = 'LTEX',
+        id = 'gone',
+        path = 'tx_gone.tga',
+      },
+      {
+        severity = 'performance',
+        code = 'uncompressedTexture',
+        message = '"textures/tx_sand.tga" isn\'t a DDS file, so it loads uncompressed and has its mipmaps built at load time',
+        plugin = 'Test.esp',
+        recordType = 'LTEX',
+        id = 'sand',
+        path = 'tx_sand.tga',
+      },
+    }
+  end)
+
+  suite.it('find a sound under sound, falling back to the same name as .mp3', function()
+    local report = check('sounds', {
+      { type = 'Sound', id = 'wav', soundPath = 'Fx\\Boom.wav' },
+      { type = 'Sound', id = 'mp3', soundPath = 'fx\\hum.wav' },
+      { type = 'Sound', id = 'gone', soundPath = 'fx\\gone.wav' },
+      { type = 'Sound', id = 'bare', soundPath = 'fx\\gone.mp3' },
+    }, { ['sound/fx/boom.wav'] = '', ['sound/fx/hum.mp3'] = '' })
+
+    expect(led(report)).toEqual {
+      'sound Fx\\Boom.wav -> sound/fx/boom.wav',
+      'sound fx\\hum.wav -> sound/fx/hum.mp3',
+      'sound fx\\gone.wav -> nothing',
+      'sound fx\\gone.mp3 -> nothing',
+    }
+
+    expect(said(report)).toEqual {
+      'missingSound SOUN gone: sound "fx\\gone.wav" not found (tried sound/fx/gone.wav, sound/fx/gone.mp3)',
+      'missingSound SOUN bare: sound "fx\\gone.mp3" not found (tried sound/fx/gone.mp3)',
+    }
+  end)
+
+  suite.it('read the files a script names in Say, StreamMusic, and PlayBink', function()
+    local text = 'begin test\n'
+      .. '  player->Say "vo\\a.mp3", "Hi" ; say "ignored.mp3"\r\n'
+      .. '  StreamMusic Special\\Fight.mp3\n'
+      .. '  if ( SayDone == 0 )\n'
+      .. '  PlayBink "intro.bik" 1\n'
+      .. '  say,"vo\\b.wav" "x"\n'
+      .. '  Say ""\n'
+      .. 'end'
+    local report = check('scripts', {
+      { type = 'Script', id = 'jess_script', text = text },
+      { type = 'Dialogue', id = 'Background' },
+      {
+        type = 'DialogueInfo',
+        id = '1234',
+        soundPath = 'vo\\line.mp3',
+        scriptText = 'streammusic "Explore\\Calm.mp3"',
+      },
+    }, {
+      ['sound/vo/a.mp3'] = '',
+      ['sound/vo/line.mp3'] = '',
+      ['music/special/fight.mp3'] = '',
+      ['video/intro.bik'] = '',
+    })
+
+    expect(led(report)).toEqual {
+      'voice vo\\a.mp3 -> sound/vo/a.mp3',
+      'music Special\\Fight.mp3 -> music/special/fight.mp3',
+      'video intro.bik -> video/intro.bik',
+      'voice vo\\b.wav -> nothing',
+      -- A response's voice file, then what its result script names; it is named by its topic.
+      'voice vo\\line.mp3 -> sound/vo/line.mp3',
+      'music Explore\\Calm.mp3 -> nothing',
+    }
+
+    expect(said(report)).toEqual {
+      'missingVoice SCPT jess_script: voice file "vo\\b.wav" not found (tried sound/vo/b.wav, sound/vo/b.mp3)',
+      'missingMusic INFO Background: 1234: music "Explore\\Calm.mp3" not found (tried music/explore/calm.mp3)',
+    }
+
+    local video = check('scripts-video', { { type = 'Script', id = 'jess_video', text = 'playbink gone.bik' } })
+    expect(said(video)).toEqual {
+      'missingVideo SCPT jess_video: video "gone.bik" not found (tried video/gone.bik)',
+    }
+  end)
+
+  suite.it('read a book\'s images as OpenMW\'s parser does', function()
+    local text = '<DIV ALIGN="CENTER"><IMG SRC="map.tga" WIDTH="240" HEIGHT="180"><BR>\n'
+      .. '<img src=nosize.tga><IMG SRC=\'img://Icons/X.dds\'>'
+      .. '<IMG SRC="sized.bmp" WIDTH="64" HEIGHT="32"><IMG SRC="gone.tga" WIDTH="1" HEIGHT="2">'
+    local report = check('books', { { type = 'Book', id = 'jess_book', text = text } }, {
+      ['bookart/map.dds'] = '',
+      ['icons/x.dds'] = '',
+      ['bookart/sized_64_32.dds'] = '',
+    })
+
+    expect(led(report)).toEqual {
+      'bookArt map.tga -> bookart/map.dds',
+      -- An image with no size isn't shown, unless it names its file outright.
+      'bookArt img://Icons/X.dds -> icons/x.dds',
+      -- Not found by its name, it is tried with its size in it.
+      'bookArt sized.bmp -> bookart/sized_64_32.dds',
+      'bookArt gone.tga -> nothing',
+    }
+
+    expect(said(report)).toEqual {
+      'missingBookArt BOOK jess_book: book image "gone.tga" not found (tried bookart/gone.dds, bookart/gone.tga, bookart/gone_1_2.dds)',
+    }
+
+    local direct = check('books-direct', {
+      { type = 'Book', id = 'jess_direct', text = '<IMG SRC="img://bookart\\none.dds">' },
+    })
+
+    expect(said(direct)).toEqual {
+      'missingBookArt BOOK jess_direct: book image "img://bookart\\none.dds" not found (tried bookart/none.dds)',
+    }
+  end)
+
+  suite.it('read the scripts a script list record names, as written', function()
+    local function config(path: string): tes3.Value
+      return { path = path, initData = '', flags = '', types = {}, records = {}, instances = {} }
+    end
+
+    local report = check('lual', {
+      { type = 'ScriptConfigList', scripts = { config 'Scripts\\Player.lua', config 'scripts/gone.lua' } },
+    }, { ['scripts/player.lua'] = '' })
+
+    expect(led(report)).toEqual {
+      'script Scripts\\Player.lua -> scripts/player.lua',
+      'script scripts/gone.lua -> nothing',
+    }
+    expect(said(report)).toEqual { 'missingScript LUAL : script "scripts/gone.lua" not found' }
+  end)
+end)
+
+suite.describe('findings', function()
+  suite.it('say a model named with its meshes folder is looked for under two', function()
+    local report = check('doubled', {
+      static('doubled', 'Meshes\\x\\rock.nif'),
+      static('nowhere', 'meshes\\x\\none.nif'),
+    }, { ['meshes/x/rock.nif'] = shape() })
+
+    expect(report.findings).toEqual {
+      {
+        severity = 'broken',
+        code = 'doubledMeshesPrefix',
+        message = 'model "Meshes\\x\\rock.nif" starts with meshes\\, so OpenMW looks for meshes/meshes/x/rock.nif; drop the prefix',
+        plugin = 'Test.esp',
+        recordType = 'STAT',
+        id = 'doubled',
+        path = 'Meshes\\x\\rock.nif',
+      },
+      {
+        severity = 'missingAsset',
+        code = 'missingMesh',
+        message = 'model "meshes\\x\\none.nif" not found at meshes/meshes/x/none.nif',
+        plugin = 'Test.esp',
+        recordType = 'STAT',
+        id = 'nowhere',
+        path = 'meshes\\x\\none.nif',
+      },
+    }
+
+    -- Only a missing file counts as missing, and the model nobody loads isn't checked.
+    expect(report.summary.missing).toBe(1)
+    expect(report.meshes).toEqual {}
+  end)
+
+  suite.it('say the Add World Art placeholder is one, and look for nothing', function()
+    local report = check('placeholder', {
+      { type = 'MiscItem', id = 'ghost', mesh = ' add world ART ' },
+    })
+
+    expect(report.findings).toEqual {
+      {
+        severity = 'info',
+        code = 'placeholderModel',
+        message = 'the model is the "Add World Art" placeholder, so dropping this item shows the error marker',
+        plugin = 'Test.esp',
+        recordType = 'MISC',
+        id = 'ghost',
+        path = ' add world ART ',
+      },
+    }
+    expect(report.summary.missing).toBe(0)
+    expect(report.summary.files).toBe(1)
+  end)
+
+  suite.it('say a book\'s markup is broken, and drop its images', function()
+    local report = check('markup', {
+      { type = 'Book', id = 'open', text = '<IMG SRC="a.tga" WIDTH="1" HEIGHT="1"><IMG SRC="x.tga' },
+      { type = 'Book', id = 'quote', text = '<FONT COLOR="000000><IMG SRC="x.tga WIDTH=2>' },
+    })
+    expect(report.summary.references).toBe(0)
+    expect(report.findings).toEqual {
+      {
+        severity = 'broken',
+        code = 'bookMarkupError',
+        message = 'OpenMW can\'t lay out this book: Tag is not terminated',
+        plugin = 'Test.esp',
+        recordType = 'BOOK',
+        id = 'open',
+        path = '',
+      },
+      {
+        severity = 'broken',
+        code = 'bookMarkupError',
+        message = 'OpenMW can\'t lay out this book: Missing end quote in tag',
+        plugin = 'Test.esp',
+        recordType = 'BOOK',
+        id = 'quote',
+        path = '',
+      },
+    }
+  end)
+
+  suite.it('load the x model beside an animated one when its .kf exists, and say when it isn\'t there', function()
+    local files: { [string]: string | buffer } = {
+      ['meshes/r/guar.nif'] = shape(),
+      ['meshes/r/xguar.kf'] = shape(),
+      ['meshes/r/xguar.nif'] = shape(),
+      ['meshes/r/rat.nif'] = shape(),
+      ['meshes/r/xrat.kf'] = shape(),
+      ['meshes/r/xghost.kf'] = shape(),
+      ['meshes/r/crab.nif'] = shape(),
+    }
+
+    local report = check('animated', {
+      { type = 'Creature', id = 'guar', mesh = 'r\\Guar.nif' },
+      { type = 'Creature', id = 'rat', mesh = 'r\\rat.nif' },
+      { type = 'Creature', id = 'ghost', mesh = 'r\\ghost.nif' },
+      { type = 'Creature', id = 'crab', mesh = 'r\\crab.nif' },
+    }, files)
+
+    expect(said(report)).toEqual {
+      'missingAnimatedModel CREA rat: meshes/r/xrat.nif is missing, but OpenMW loads it for "r\\rat.nif" because its .kf exists',
+      -- The x model is looked for even when the model itself is missing.
+      'missingAnimatedModel CREA ghost: meshes/r/xghost.nif is missing, but OpenMW loads it for "r\\ghost.nif" because its .kf exists',
+      'missingMesh CREA ghost: model "r\\ghost.nif" not found at meshes/r/ghost.nif',
+    }
+
+    -- The reference still resolves to the model as written; the .kf and the x model are checked
+    -- beside it, each used by the same record.
+    expect(led(report)).toEqual {
+      'animatedMesh r\\Guar.nif -> meshes/r/guar.nif',
+      'animatedMesh r\\rat.nif -> meshes/r/rat.nif',
+      'animatedMesh r\\ghost.nif -> nothing',
+      'animatedMesh r\\crab.nif -> meshes/r/crab.nif',
+    }
+
+    expect(meshPaths(report)).toEqual {
+      'meshes/r/crab.nif',
+      'meshes/r/guar.nif',
+      'meshes/r/rat.nif',
+      'meshes/r/xghost.kf',
+      'meshes/r/xguar.kf',
+      'meshes/r/xguar.nif',
+      'meshes/r/xrat.kf',
+    }
+    expect(report.meshes[5].usedBy).toEqual { 'CREA guar' }
+    expect(report.meshes[6].usedBy).toEqual { 'CREA guar' }
+  end)
+
+  suite.it('order findings by severity, and within one as the records and their fields come', function()
+    local report = check('order', {
+      { type = 'LandscapeTexture', id = 'sand', index = 1, fileName = 'tx_sand.tga' },
+      { type = 'MiscItem', id = 'ghost', mesh = 'Add World Art', icon = 'gone.tga' },
+      { type = 'Book', id = 'open', mesh = 'meshes\\x\\rock.nif', icon = 'book.tga', text = '<IMG' },
+      static('nowhere', 'none.nif'),
+    }, { ['textures/tx_sand.tga'] = '', ['meshes/x/rock.nif'] = shape() })
+    local order = {}
+    for _, finding in report.findings do
+      table.insert(order, `{finding.severity} {finding.code} {finding.id}`)
+    end
+
+    expect(order).toEqual {
+      -- Problems with a record's text come before problems with its files.
+      'broken bookMarkupError open',
+      'broken doubledMeshesPrefix open',
+      'missingAsset missingIcon ghost',
+      'missingAsset missingIcon open',
+      'missingAsset missingMesh nowhere',
+      'performance uncompressedTexture sand',
+      'info placeholderModel ghost',
+    }
+  end)
+end)
+
+suite.describe('a load order', function()
+  suite.it('counts a record only in the last plugin whose copy names a file', function()
+    local _, lookup = data('winners', { ['meshes/b.nif'] = shape() })
+    local report = pluginAssets.check({
+      {
+        name = 'Base.esm',
+        plugin = plugin {
+          static('tree', 'a.nif'),
+          static('Rock', 'gone.nif'),
+          { type = 'MiscItem', id = 'gem', mesh = 'gem.nif', icon = 'gem.tga' },
+        },
+      },
+      {
+        name = 'Mod.esp',
+        plugin = plugin {
+          static('TREE', 'b.nif'),
+          -- An override that names no file leaves the earlier copy's files counted.
+          { type = 'MiscItem', id = 'gem', mesh = '', icon = '' },
+          -- The same id under another record type is another record.
+          { type = 'Activator', id = 'rock', mesh = 'b.nif' },
+        },
+      },
+    }, lookup)
+    expect(report.summary.plugins).toEqual { 'Base.esm', 'Mod.esp' }
+    expect(report.summary.references).toBe(5)
+    expect(said(report)).toEqual {
+      'missingMesh STAT Rock: model "gone.nif" not found at meshes/gone.nif',
+      'missingMesh MISC gem: model "gem.nif" not found at meshes/gem.nif',
+      'missingIcon MISC gem: icon "gem.tga" not found (tried icons/gem.dds, icons/gem.tga)',
+    }
+
+    -- Each record is named as the plugin that won spells its id.
+    expect(report.meshes[1].usedBy).toEqual { 'STAT TREE', 'ACTI rock' }
+    expect(report.findings[1].plugin).toBe 'Base.esm'
+  end)
+
+  suite.it('reports a file that couldn\'t be read, and still reads the rest', function()
+    local _, lookup = data('unreadable', {})
+    local report = pluginAssets.check({
+      { name = 'Broken.esp', problem = 'failed to parse \'/data/Broken.esp\': truncated record header at offset 0' },
+      { name = 'Mod.esp', plugin = plugin { static('rock', 'rock.nif') } },
+      { name = 'Gone.esp', problem = 'failed to read \'/data/Gone.esp\': No such file or directory (os error 2)' },
+    }, lookup)
+    expect(report.summary.plugins).toEqual { 'Broken.esp', 'Mod.esp', 'Gone.esp' }
+    expect(report.summary.unreadablePlugins).toBe(2)
+    expect(report.summary.byCode).toEqual { unreadablePlugin = 2, missingMesh = 1 }
+    expect(report.findings[1]).toEqual {
+      severity = 'wontLoad',
+      code = 'unreadablePlugin',
+      message = 'failed to parse \'/data/Broken.esp\': truncated record header at offset 0',
+      plugin = 'Broken.esp',
+      recordType = '',
+      id = '',
+      path = '',
+    }
+    expect(report.findings[2].plugin).toBe 'Gone.esp'
+    expect(report.findings[3].code).toBe 'missingMesh'
+
+    expect(function() pluginAssets.check({ { name = 'Nothing.esp' } }, lookup) end).toThrow(
+      'plugin-assets: \'Nothing.esp\' has no plugin, scripts, or problem'
+    )
+  end)
+
+  suite.it('reads a script list as OpenMW does, a later list\'s line replacing an earlier one\'s', function()
+    local _, lookup = data('script-lists', { ['scripts/a.lua'] = '', ['scripts/late.lua'] = '' })
+    local first = '# comment\r\nPLAYER, NPC: Scripts/A.lua\n\nGLOBAL scripts/b.lua\nCUSTOM: c.txt\nMENU:   scripts/menu.lua\n'
+    local report = pluginAssets.check({
+      { name = 'First.omwscripts', scripts = first },
+      { name = 'Second.omwscripts', scripts = '\n\n\n\n\n\n\nPLAYER: scripts/late.lua' },
+    }, lookup)
+
+    expect(led(report)).toEqual {
+      'script Scripts/A.lua -> scripts/a.lua',
+      'script scripts/menu.lua -> nothing',
+      'script scripts/late.lua -> scripts/late.lua',
+    }
+
+    expect(report.findings).toEqual {
+      {
+        severity = 'broken',
+        code = 'omwscriptsError',
+        message = 'OpenMW rejects this script list: No flags found in: GLOBAL scripts/b.lua',
+        plugin = 'First.omwscripts',
+        recordType = 'omwscripts',
+        id = 'line 4',
+        path = '',
+      },
+      {
+        severity = 'broken',
+        code = 'omwscriptsError',
+        message = 'OpenMW rejects this script list: Lua script should have suffix \'.lua\', got: CUSTOM: c.txt',
+        plugin = 'First.omwscripts',
+        recordType = 'omwscripts',
+        id = 'line 5',
+        path = '',
+      },
+      {
+        severity = 'missingAsset',
+        code = 'missingScript',
+        message = 'script "scripts/menu.lua" not found',
+        plugin = 'First.omwscripts',
+        recordType = 'omwscripts',
+        id = 'line 6',
+        path = 'scripts/menu.lua',
+      },
+    }
+
+    -- A line is a record named by its number, so the same line of a later list replaces it.
+    local replaced = pluginAssets.check({
+      { name = 'First.omwscripts', scripts = 'PLAYER: scripts/gone.lua' },
+      { name = 'Second.omwscripts', scripts = 'PLAYER: scripts/late.lua' },
+    }, lookup)
+    expect(led(replaced)).toEqual { 'script scripts/late.lua -> scripts/late.lua' }
+    expect(replaced.findings).toEqual {}
+  end)
+
+  suite.it('reads what @load-order opened, over the configuration\'s VFS', function()
+    local root = jess.fs.join(scratch, 'plugin-assets', 'configured')
+    if jess.fs.exists(root) then jess.fs.remove(root) end
+
+    local base = plugin { static('rock', 'x\\rock.nif'), { type = 'Sound', id = 'boom', soundPath = 'boom.wav' } }
+    jess.fs.write(jess.fs.join(root, 'data/Base.esm'), base:save())
+    jess.fs.write(jess.fs.join(root, 'data/Broken.esp'), 'not a plugin')
+    jess.fs.write(jess.fs.join(root, 'data/meshes/x/rock.nif'), shape 'tx_rock.tga')
+
+    local builder = archive.bsa.tes3.Builder.new()
+    builder:addBytes('textures/tx_rock.dds', 'archived')
+    builder:addBytes('sound/boom.wav', 'archived')
+    builder:writePath(jess.fs.join(root, 'data/Pack.bsa'))
+    jess.fs.write(
+      jess.fs.join(root, 'openmw.cfg'),
+      'data=data\nfallback-archive=Pack.bsa\ncontent=Base.esm\ncontent=Broken.esp\n'
+    )
+
+    local context = openmw.new(jess.fs.join(root, 'openmw.cfg'))
+    local opened = loadOrder.open(context, { types = pluginAssets.recordTypes })
+    local inputs: { pluginAssets.Input } = { opened.plugins[1], opened.failures[1] }
+    local report = pluginAssets.check(inputs, context:vfs())
+    local pack = jess.fs.join(root, 'data/Pack.bsa')
+    local model = jess.fs.join(root, 'data/meshes/x/rock.nif')
+    expect(said(report)).toEqual {
+      `unreadablePlugin  : failed to parse '{jess.fs.join(root, 'data/Broken.esp')}': truncated record header at offset 0`,
+    }
+
+    expect(report.references[2]).toEqual {
+      plugin = 'Base.esm',
+      recordType = 'SOUN',
+      id = 'boom',
+      kind = 'sound',
+      path = 'boom.wav',
+      resolved = 'sound/boom.wav',
+      source = pack,
+    }
+
+    expect(report.meshes[1].textures).toEqual {
+      { path = 'tx_rock.tga', resolved = 'textures/tx_rock.dds', source = pack },
+    }
+
+    -- By where each file is on disk, as paths sort (`Pack.bsa` before `meshes`), then by VFS path.
+    expect(report.usedFiles).toEqual {
+      { file = pack, path = 'sound/boom.wav', inArchive = true },
+      { file = pack, path = 'textures/tx_rock.dds', inArchive = true },
+      { file = model, path = 'meshes/x/rock.nif', inArchive = false },
+    }
+  end)
+end)
+
+suite.describe('models', function()
+  suite.it('are checked once each, in path order, with every record that uses them', function()
+    local report = check('models-used', {
+      static('second', 'b\\rock.nif'),
+      static('first', 'a\\rock.nif'),
+      { type = 'MiscItem', id = 'also', mesh = 'B\\ROCK.nif' },
+      static('second', 'b\\rock.nif'),
+      static('junk', 'junk.nif'),
+      static('bare', 'x\\bare.nif'),
+    }, {
+      ['meshes/a/rock.nif'] = shape 'tx_gone.tga',
+      ['meshes/b/rock.nif'] = shape(),
+      ['meshes/junk.nif'] = 'not a model',
+      ['meshes/x/bare.nif'] = shape 'tx_plain.bmp',
+      ['textures/tx_plain.bmp'] = '',
+    })
+
+    expect(meshPaths(report)).toEqual {
+      'meshes/a/rock.nif',
+      'meshes/b/rock.nif',
+      'meshes/junk.nif',
+      'meshes/x/bare.nif',
+    }
+    expect(report.meshes[2].usedBy).toEqual { 'STAT second', 'MISC also' }
+    expect(report.summary.meshesChecked).toBe(4)
+    expect(report.summary.meshesWontLoad).toBe(1)
+    expect(report.summary.meshesByCode).toEqual {
+      invalidHeader = 1,
+      missingTexture = 1,
+      uncompressedTexture = 1,
+    }
+
+    -- A model's missing texture is the model's finding, not one of the plugin's.
+    expect(report.findings).toEqual {}
+    expect(report.summary.missing).toBe(0)
+    expect(report.meshes[1].worst).toBe 'missingAsset'
+    expect(report.meshes[1].findings).toEqual {
+      {
+        severity = 'missingAsset',
+        code = 'missingTexture',
+        message = 'texture "tx_gone.tga" not found (tried textures/tx_gone.dds, textures/tx_gone.tga)',
+      },
+    }
+
+    expect(report.meshes[3].findings).toEqual {
+      { severity = 'wontLoad', code = 'invalidHeader', message = 'truncated version line at offset 0' },
+    }
+    expect(report.meshes[3].deeplyChecked).toBe(false)
+  end)
+
+  suite.it('lose their collision findings where nothing that uses them collides by its model', function()
+    local files: { [string]: string | buffer } = {
+      ['meshes/actor.nif'] = defects(),
+      ['meshes/both.nif'] = defects(),
+      ['meshes/visual.nif'] = defects(),
+      ['meshes/heavy.nif'] = shape(nil, 5001),
+      ['meshes/heavy_static.nif'] = shape(nil, 5001),
+    }
+
+    local report = check('collision', {
+      { type = 'Creature', id = 'guar', mesh = 'actor.nif' },
+      { type = 'Npc', id = 'fargoth', mesh = 'actor.nif' },
+      { type = 'Bodypart', id = 'hand', mesh = 'actor.nif' },
+      { type = 'Creature', id = 'rat', mesh = 'both.nif' },
+      static('crate', 'both.nif'),
+      static('VFX_Cast', 'visual.nif'),
+      { type = 'MagicEffect', effectId = 'WaterBreathing', castVisual = 'vfx_cast' },
+      { type = 'Creature', id = 'ogrim', mesh = 'heavy.nif' },
+      static('boulder', 'heavy_static.nif'),
+    }, files)
+    local codes: { [string]: { string } } = {}
+    for _, mesh in report.meshes do
+      local found = {}
+      for _, finding in mesh.findings do
+        table.insert(found, `{finding.severity} {finding.code}`)
+      end
+
+      codes[mesh.path] = found
+    end
+
+    expect(codes).toEqual {
+      -- Actors and their body parts collide by their bounding box.
+      ['meshes/actor.nif'] = { 'broken visibleEditorMarker' },
+      ['meshes/both.nif'] = { 'broken visibleEditorMarker', 'collision lowercaseNcc' },
+      -- A magic effect's visual doesn't collide at all, whatever case names it.
+      ['meshes/visual.nif'] = { 'broken visibleEditorMarker' },
+      ['meshes/heavy.nif'] = {},
+      ['meshes/heavy_static.nif'] = { 'performance renderGeometryCollision' },
+    }
+    expect(report.meshes[1].worst).toBe 'broken'
+    expect(report.meshes[3].worst).toBeNil()
+    expect(report.summary.meshesByCode).toEqual {
+      visibleEditorMarker = 3,
+      lowercaseNcc = 1,
+      renderGeometryCollision = 1,
+    }
+  end)
+
+  suite.it('include the distant models a paged object\'s plugin version names', function()
+    local files: { [string]: string | buffer } = {
+      ['meshes/tower.nif'] = shape(),
+      ['meshes/tower_dist.nif'] = shape(),
+      ['meshes/tower_dist_0.nif'] = shape(),
+      ['meshes/tower_dist_15.nif'] = shape(),
+      ['meshes/tower_dist_16.nif'] = shape(),
+      ['meshes/tower_far.nif'] = shape(),
+      ['meshes/tower_lod_3.nif'] = shape(),
+    }
+
+    local records: { tes3.Value } = {
+      static('tower', 'tower.nif'),
+      { type = 'Activator', id = 'gate', mesh = 'tower.nif' },
+      -- Not paged, so it has no distant model.
+      { type = 'MiscItem', id = 'toy', mesh = 'tower.nif' },
+    }
+    local _, lookup = data('distant', files)
+    local function models(version: number?): { string }
+      local inputs = { { name = 'Test.esp', plugin = plugin(records, version) } }
+      return meshPaths(pluginAssets.check(inputs, lookup))
+    end
+
+    -- `@tes3` builds a version 1.3 plugin, as Morrowind's are.
+    expect(models()).toEqual {
+      'meshes/tower.nif',
+      'meshes/tower_dist.nif',
+      'meshes/tower_dist_0.nif',
+      'meshes/tower_dist_15.nif',
+    }
+    expect(models(1.2)).toEqual(models())
+    expect(models(1.0)).toEqual { 'meshes/tower.nif', 'meshes/tower_far.nif' }
+    expect(models(0.8)).toEqual(models(1.0))
+    expect(models(0.94)).toEqual { 'meshes/tower.nif', 'meshes/tower_lod_3.nif' }
+    expect(models(1.7)).toEqual(models(0.94))
+    expect(models(1.5)).toEqual { 'meshes/tower.nif' }
+
+    local distant = pluginAssets.check({ { name = 'Test.esp', plugin = plugin(records) } }, lookup)
+    expect(distant.meshes[2].usedBy).toEqual { 'STAT tower', 'ACTI gate' }
+    expect(distant.meshes[1].usedBy).toEqual { 'STAT tower', 'ACTI gate', 'MISC toy' }
+  end)
+end)
+
+suite.describe('options', function()
+  local records: { tes3.Value } = {
+    static('marker', 'marker.nif'),
+    static('nowhere', 'none.nif'),
+    static('clean', 'clean.nif'),
+    { type = 'LandscapeTexture', id = 'sand', index = 1, fileName = 'tx_sand.tga' },
+    { type = 'MiscItem', id = 'ghost', mesh = 'Add World Art' },
+  }
+
+  local function files(): { [string]: string | buffer }
+    return {
+      ['meshes/marker.nif'] = defects(),
+      ['meshes/clean.nif'] = shape(),
+      ['textures/tx_sand.tga'] = '',
+    }
+  end
+
+  suite.it('show findings down to a severity, as the doctor asks for them', function()
+    local whole = check('show-whole', records, files())
+    expect(#whole.findings).toBe(3)
+    expect(meshPaths(whole)).toEqual { 'meshes/clean.nif', 'meshes/marker.nif' }
+
+    local report = check('show', records, files(), { show = 'collision', references = false })
+    expect(said(report)).toEqual {
+      'missingMesh STAT nowhere: model "none.nif" not found at meshes/none.nif',
+    }
+
+    -- Models left without a finding are left out; the summary counts everything still.
+    expect(meshPaths(report)).toEqual { 'meshes/marker.nif' }
+    expect(#report.meshes[1].findings).toBe(2)
+    expect(report.summary).toEqual(whole.summary)
+    expect(report.summary.byCode).toEqual {
+      missingMesh = 1,
+      placeholderModel = 1,
+      uncompressedTexture = 1,
+    }
+
+    local broken = check('show-broken', records, files(), { show = 'broken' })
+    expect(broken.findings).toEqual {}
+    expect(#broken.meshes[1].findings).toBe(1)
+    expect(broken.meshes[1].findings[1].code).toBe 'visibleEditorMarker'
+
+    -- The models' own worst finding isn't recounted for what is shown.
+    expect(broken.meshes[1].worst).toBe 'broken'
+    expect(#broken.references).toBe(5)
+  end)
+
+  suite.it('show everything when verbose, whatever severity is asked for', function()
+    local report = check('verbose', records, files(), { show = 'wontLoad', verbose = true })
+    expect(#report.findings).toBe(3)
+    expect(meshPaths(report)).toEqual { 'meshes/clean.nif', 'meshes/marker.nif' }
+    expect(#report.meshes[2].findings).toBe(2)
+  end)
+
+  suite.it('refuse an option it doesn\'t have', function()
+    local _, lookup = data('unknown-option', {})
+    expect(function() pluginAssets.check({}, lookup, { data = 'x' } :: any) end).toThrow(
+      'plugin-assets: unknown option \'data\': expected meshes, references, show, or verbose'
+    )
+  end)
+
+  suite.it('lists the record types a plugin has to be opened with', function()
+    expect(#pluginAssets.recordTypes).toBe(27)
+    expect(table.find(pluginAssets.recordTypes, 'DIAL') ~= nil).toBe(true)
+    expect(table.find(pluginAssets.recordTypes, 'CELL')).toBeNil()
+    expect(table.isfrozen(pluginAssets.recordTypes)).toBe(true)
+  end)
+end)
+
+return suite
