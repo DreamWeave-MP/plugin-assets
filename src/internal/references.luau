@@ -1,0 +1,530 @@
+--!strict
+--!native
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+
+--[[
+The files a plugin's records name, and the record text OpenMW can't read: what jess-assets'
+`plugin_assets` collected, record by record, before anything is looked up. Model, icon, texture,
+and sound fields by record type; the voice, music, and video files MWScript names in `Say`,
+`StreamMusic`, and `PlayBink`; a book's `<IMG>` tags, read the way OpenMW's `BookTextParser`
+reads them; the Lua scripts a `LUAL` record or an `.omwscripts` file lists.
+]]
+
+local tes3 = require '@tes3'
+
+--- What a record field names, which decides how OpenMW looks it up: a model under `meshes`,
+--- used as is; a model for a class OpenMW animates, whose `x`-prefixed copy is used when its
+--- `.kf` exists; an inventory icon; a magic effect icon, which also needs a `b_` large icon; a
+--- texture; a sound; a voice line; a book image; an OpenMW Lua script; a track `StreamMusic`
+--- plays; a video `PlayBink` plays.
+export type Kind =
+  'mesh'
+  | 'animatedMesh'
+  | 'icon'
+  | 'effectIcon'
+  | 'texture'
+  | 'sound'
+  | 'voice'
+  | 'bookArt'
+  | 'script'
+  | 'music'
+  | 'video'
+
+--- A file a record refers to.
+export type Reference = {
+  --- The plugin, by name.
+  plugin: string,
+  --- The record's type, as its tag.
+  recordType: string,
+  id: string,
+  kind: Kind,
+  --- The path as the record spells it.
+  path: string,
+  --- A book image's declared size, which its lookup falls back on.
+  width: number?,
+  height: number?,
+  --- For models OpenMW pages in the distance, the suffix of their distant versions (`_dist` for
+  --- Morrowind's plugins), which depends on the plugin's version.
+  distant: string?,
+}
+
+--- A problem with a record's text rather than a file, such as book markup OpenMW can't lay out.
+export type Problem = {
+  plugin: string,
+  recordType: string,
+  id: string,
+  code: string,
+  message: string,
+}
+
+--- What one plugin refers to: files, problems with record text, and the lowercase ids of the
+--- statics its magic effects spawn as visuals, which never collide.
+export type Found = {
+  references: { Reference },
+  problems: { Problem },
+  effectVisuals: { string },
+}
+
+type Field = { kind: Kind, field: string }
+
+local Model: { Field } = { { kind = 'mesh', field = 'mesh' } }
+local Animated: { Field } = { { kind = 'animatedMesh', field = 'mesh' } }
+local Item: { Field } = { { kind = 'mesh', field = 'mesh' }, { kind = 'icon', field = 'icon' } }
+
+--- The fields that hold a file path, by record type, in the order jess-assets read them. Script
+--- text, book text, and script lists are read apart from these.
+local Files: { [string]: { Field } } = table.freeze {
+  SOUN = { { kind = 'sound', field = 'soundPath' } },
+  INFO = { { kind = 'voice', field = 'soundPath' } },
+  MGEF = { { kind = 'effectIcon', field = 'icon' }, { kind = 'texture', field = 'texture' } },
+  BSGN = { { kind = 'texture', field = 'texture' } },
+  LTEX = { { kind = 'texture', field = 'fileName' } },
+  STAT = Model,
+  BODY = Model,
+  DOOR = Animated,
+  CONT = Animated,
+  ACTI = Animated,
+  CREA = Animated,
+  NPC_ = Animated,
+  LIGH = { { kind = 'animatedMesh', field = 'mesh' }, { kind = 'icon', field = 'icon' } },
+  MISC = Item,
+  WEAP = Item,
+  ARMO = Item,
+  CLOT = Item,
+  REPA = Item,
+  APPA = Item,
+  LOCK = Item,
+  PROB = Item,
+  INGR = Item,
+  ALCH = Item,
+  BOOK = Item,
+}
+
+--- Record types with fields that name files; the rest aren't decoded. `DIAL` names none, but
+--- every `INFO` belongs to the one before it.
+local AssetTags: { string } = table.freeze {
+  'SCPT',
+  'SOUN',
+  'MGEF',
+  'BSGN',
+  'LTEX',
+  'STAT',
+  'DOOR',
+  'MISC',
+  'WEAP',
+  'CONT',
+  'CREA',
+  'BODY',
+  'LIGH',
+  'NPC_',
+  'ARMO',
+  'CLOT',
+  'REPA',
+  'ACTI',
+  'APPA',
+  'LOCK',
+  'PROB',
+  'INGR',
+  'BOOK',
+  'ALCH',
+  'DIAL',
+  'INFO',
+  'LUAL',
+}
+
+local IsAssetTag: { [string]: boolean } = {}
+for _, tag in AssetTags do
+  IsAssetTag[tag] = true
+end
+
+--- Record types OpenMW pages in the distance, with a distant version of their model.
+local Paged: { [string]: boolean } = { STAT = true, ACTI = true, DOOR = true, CONT = true }
+
+--- The script functions whose first argument is a file, by name in lowercase.
+local ScriptFiles: { [string]: Kind } = { say = 'voice', streammusic = 'music', playbink = 'video' }
+
+--- `getDistantMeshPattern`: the suffix of distant models, by the bits of a content file's
+--- version as a 32-bit float (1.2 and 1.3, 0.8 and 1.0, 0.94 and 1.7).
+local DistantSuffixes: { [number]: string } = {
+  [0x3f99999a] = '_dist',
+  [0x3fa66666] = '_dist',
+  [0x3f4ccccd] = '_far',
+  [0x3f800000] = '_far',
+  [0x3f70a3d7] = '_lod',
+  [0x3fd9999a] = '_lod',
+}
+
+--- How many bytes of `text` at `position` are one whitespace character, 0 when it isn't one.
+--- Record text is decoded from a Windows code page, where the only whitespace past ASCII is the
+--- no-break space (U+00A0, two bytes in UTF-8); jess-assets counted it, as Rust's
+--- `char::is_whitespace` does.
+local function spaceAt(text: string, position: number): number
+  local byte = string.byte(text, position)
+  if not byte then return 0 end
+  if byte == 32 or (byte >= 9 and byte <= 13) then return 1 end
+  if byte == 0xc2 and string.byte(text, position + 1) == 0xa0 then return 2 end
+
+  return 0
+end
+
+--- `text` without the whitespace it starts with.
+local function trimStart(text: string): string
+  local position = 1
+  while true do
+    local width = spaceAt(text, position)
+    if width == 0 then break end
+
+    position += width
+  end
+
+  return string.sub(text, position)
+end
+
+--- `text` without the whitespace around it.
+local function trim(text: string): string
+  local trimmed = trimStart(text)
+  local finish = #trimmed
+  while finish > 0 do
+    local byte = string.byte(trimmed, finish)
+    if byte == 32 or (byte >= 9 and byte <= 13) then
+      finish -= 1
+    elseif byte == 0xa0 and string.byte(trimmed, finish - 1) == 0xc2 then
+      finish -= 2
+    else
+      break
+    end
+  end
+
+  return string.sub(trimmed, 1, finish)
+end
+
+local Comma, Open, Close, Semicolon, Quote = string.byte ',', string.byte '(', string.byte ')', string.byte ';', string.byte '"'
+
+--- A script line's tokens: quoted strings without their quotes, and words split at spaces,
+--- commas, parentheses, and `->`, up to a `;` comment.
+local function scriptTokens(line: string): { string }
+  local tokens: { string } = {}
+  local position, length = 1, #line
+  while true do
+    while position <= length do
+      local width = spaceAt(line, position)
+      local byte = string.byte(line, position)
+      if width == 0 and (byte == Comma or byte == Open or byte == Close) then width = 1 end
+      if width == 0 then break end
+
+      position += width
+    end
+
+    local first = string.byte(line, position)
+    if not first or first == Semicolon then break end
+
+    if first == Quote then
+      local close = string.find(line, '"', position + 1, true) or length + 1
+      table.insert(tokens, string.sub(line, position + 1, close - 1))
+      position = close + 1
+      continue
+    end
+
+    if string.sub(line, position, position + 1) == '->' then
+      position += 2
+      continue
+    end
+
+    local stop = position
+    while stop <= length do
+      local byte = string.byte(line, stop)
+      local ends = byte == Comma
+        or byte == Open
+        or byte == Close
+        or byte == Semicolon
+        or byte == Quote
+        or spaceAt(line, stop) > 0
+      if ends or string.sub(line, stop, stop + 1) == '->' then break end
+
+      stop += 1
+    end
+
+    table.insert(tokens, string.sub(line, position, stop - 1))
+    position = stop
+  end
+
+  return tokens
+end
+
+--- Files MWScript names in string arguments: `Say` voice files, `StreamMusic` tracks, and
+--- `PlayBink` videos, in script order.
+local function scriptFiles(text: string): { { kind: Kind, path: string } }
+  local files = {}
+  for _, line in string.split(text, '\n') do
+    -- A line ends at its line feed, and a carriage return before that isn't part of it.
+    if string.sub(line, -1) == '\r' then line = string.sub(line, 1, -2) end
+
+    local tokens = scriptTokens(line)
+    for index, token in tokens do
+      local kind = ScriptFiles[string.lower(token)]
+      local file = tokens[index + 1]
+      if kind and file and file ~= '' then table.insert(files, { kind = kind, path = file }) end
+    end
+  end
+
+  return files
+end
+
+--- `MyGUI::utility::parseInt`: a leading integer that fits 32 bits, or 0.
+local function parseInteger(text: string): number
+  local sign, digits = string.match(trimStart(text), '^([+-]?)(%d*)')
+  local value = tonumber(digits)
+  if not value then return 0 end
+  if sign == '-' then value = -value end
+  if value < -0x80000000 or value > 0x7fffffff then return 0 end
+
+  return value
+end
+
+type Attribute = { key: string, value: string }
+
+--- `BookTextParser::parseTag`'s attribute loop: `key=value` pairs, a value quoted or running to
+--- the next space; nil and the parser's message for a quote that never closes.
+local function parseAttributes(tag: string): ({ Attribute }?, string?)
+  local attributes: { Attribute } = {}
+  local rest = tag
+  while rest ~= '' do
+    local separator = string.find(rest, '=', 1, true)
+    if not separator then break end
+
+    local key = string.lower(string.sub(rest, 1, separator - 1))
+    rest = string.sub(rest, separator + 1)
+    if rest == '' then break end
+
+    local first = string.sub(rest, 1, 1)
+    local value
+    if first == '"' or first == '\'' then
+      local close = string.find(rest, first, 2, true)
+      if not close then return nil, 'Missing end quote in tag' end
+
+      value = string.sub(rest, 2, close - 1)
+
+      -- The parser steps over the quote and the one byte after it. A step into the middle of a
+      -- character ended jess-assets' read of the tag, so it ends this one.
+      local skipped = string.byte(rest, close + 1)
+      rest = if skipped and skipped >= 0x80 then '' else string.sub(rest, close + 2)
+    else
+      local space = string.find(rest, ' ', 1, true)
+      value = if space then string.sub(rest, 1, space - 1) else rest
+      rest = if space then string.sub(rest, space + 1) else ''
+    end
+
+    table.insert(attributes, { key = key, value = value })
+  end
+
+  return attributes, nil
+end
+
+local function attribute(attributes: { Attribute }, key: string): string?
+  for _, entry in attributes do
+    if entry.key == key then return entry.value end
+  end
+
+  return nil
+end
+
+type Image = { path: string, width: number, height: number }
+
+--- `<IMG>` tags as OpenMW's `BookTextParser` reads them: each image it shows. Images without a
+--- size are skipped, unless they use `img://`. Nil and the parser's message for markup it
+--- throws on.
+local function bookImages(text: string): ({ Image }?, string?)
+  local images: { Image } = {}
+  local position = 1
+  while true do
+    local start = string.find(text, '<', position, true)
+    if not start then break end
+
+    local finish = string.find(text, '>', start + 1, true)
+    if not finish then return nil, 'Tag is not terminated' end
+
+    local tag = string.sub(text, start + 1, finish - 1)
+    position = finish + 1
+
+    local space = string.find(tag, ' ', 1, true)
+    local name = if space then string.sub(tag, 1, space - 1) else tag
+
+    -- Other tags' attributes are parsed too, so their quoting errors throw as well.
+    local attributes, problem = parseAttributes(if space then string.sub(tag, space + 1) else '')
+    if not attributes then return nil, problem end
+    if string.lower(name) ~= 'img' then continue end
+
+    local source = attribute(attributes, 'src')
+    if not source then continue end
+
+    local width = parseInteger(attribute(attributes, 'width') or '')
+    local height = parseInteger(attribute(attributes, 'height') or '')
+    if string.sub(source, 1, 6) == 'img://' or (width ~= 0 and height ~= 0) then
+      table.insert(images, { path = source, width = width, height = height })
+    end
+  end
+
+  return images, nil
+end
+
+--- The suffix of the distant models a plugin's paged objects load, from its header's version.
+local function distantSuffix(plugin: tes3.Plugin): string?
+  -- `plugin:header()` throws for a file that doesn't start with a TES3 header it can read. Such
+  -- a file's records still name their files; only its distant models go unlooked for.
+  local read, header = pcall(plugin.header, plugin)
+  if not read then return nil end
+
+  local bits = buffer.create(4)
+  buffer.writef32(bits, 0, header.version)
+  return DistantSuffixes[buffer.readu32(bits, 0)]
+end
+
+--- What a record names itself by in a report.
+local function recordId(plugin: tes3.Plugin, index: number, tag: string, value: tes3.Value, topic: string): string
+  if tag == 'INFO' then return `{topic}: {tostring(value.id)}` end
+  if tag == 'MGEF' then return tostring(value.effectId) end
+
+  -- A script's id is in its header, not a NAME subrecord.
+  if tag == 'SCPT' then return tostring(value.id) end
+
+  return tes3.records.fieldId(plugin, index) or tes3.records.id(plugin, index) or ''
+end
+
+--- Every file `plugin`'s records refer to, in record order, with the plugin named `name`.
+local function ofPlugin(plugin: tes3.Plugin, name: string): Found
+  local found: Found = { references = {}, problems = {}, effectVisuals = {} }
+  local suffix = distantSuffix(plugin)
+
+  -- Each INFO belongs to the DIAL before it.
+  local topic = ''
+  for index = 0, plugin:count() - 1 do
+    local tag = plugin:tag(index)
+    if not IsAssetTag[tag] then continue end
+
+    -- `plugin:decode` throws on bytes that don't read as the record's type. Such a record names
+    -- no file anyone can tell, and the records after it are still read.
+    local decoded, value = pcall(plugin.decode, plugin, index)
+    if not decoded or not value then continue end
+
+    if tag == 'DIAL' then
+      topic = tostring(value.id)
+      continue
+    end
+
+    local id = recordId(plugin, index, tag, value, topic)
+    local function refer(kind: Kind, path: unknown)
+      if type(path) ~= 'string' or trim(path) == '' then return end
+
+      local paged = Paged[tag] and (kind == 'mesh' or kind == 'animatedMesh')
+      table.insert(found.references, {
+        plugin = name,
+        recordType = tag,
+        id = id,
+        kind = kind,
+        path = path,
+        distant = if paged then suffix else nil,
+      })
+    end
+
+    for _, field in Files[tag] or {} do
+      refer(field.kind, value[field.field])
+    end
+
+    local script = if tag == 'INFO' then value.scriptText elseif tag == 'SCPT' then value.text else nil
+    if type(script) == 'string' then
+      for _, file in scriptFiles(script) do
+        refer(file.kind, file.path)
+      end
+    end
+
+    if tag == 'LUAL' then
+      for _, entry in value.scripts :: { tes3.Value } do
+        refer('script', entry.path)
+      end
+    end
+
+    if tag == 'MGEF' then
+      for _, field in { 'castVisual', 'boltVisual', 'hitVisual', 'areaVisual' } do
+        local visual = value[field]
+        if type(visual) == 'string' and visual ~= '' then
+          table.insert(found.effectVisuals, string.lower(visual))
+        end
+      end
+    end
+
+    if tag ~= 'BOOK' then continue end
+
+    local images, problem = bookImages(tostring(value.text))
+    if not images then
+      table.insert(found.problems, {
+        plugin = name,
+        recordType = tag,
+        id = id,
+        code = 'bookMarkupError',
+        message = `OpenMW can't lay out this book: {problem}`,
+      })
+      continue
+    end
+
+    for _, image in images do
+      table.insert(found.references, {
+        plugin = name,
+        recordType = tag,
+        id = id,
+        kind = 'bookArt',
+        path = image.path,
+        width = image.width,
+        height = image.height,
+      })
+    end
+  end
+
+  return found
+end
+
+--- The scripts an `.omwscripts` file lists, read like OpenMW's `parseOMWScripts`: one
+--- `TAGS: path.lua` per line, with `#` comments. Each line is a record of its own, `line <n>`.
+local function ofScriptList(text: string, name: string): Found
+  local found: Found = { references = {}, problems = {}, effectVisuals = {} }
+  for number, whole in string.split(text, '\n') do
+    local line = trim(whole)
+    if line == '' or string.sub(line, 1, 1) == '#' then continue end
+
+    local id = `line {number}`
+    local colon = string.find(line, ':', 1, true)
+    local problem
+    if string.lower(string.sub(line, -4)) ~= '.lua' then
+      problem = `Lua script should have suffix '.lua', got: {line}`
+    elseif not colon then
+      problem = `No flags found in: {line}`
+    end
+
+    if problem then
+      table.insert(found.problems, {
+        plugin = name,
+        recordType = 'omwscripts',
+        id = id,
+        code = 'omwscriptsError',
+        message = `OpenMW rejects this script list: {problem}`,
+      })
+      continue
+    end
+
+    table.insert(found.references, {
+      plugin = name,
+      recordType = 'omwscripts',
+      id = id,
+      kind = 'script',
+      path = trimStart(string.sub(line, (colon :: number) + 1)),
+    })
+  end
+
+  return found
+end
+
+return table.freeze {
+  assetTags = AssetTags,
+  ofPlugin = ofPlugin,
+  ofScriptList = ofScriptList,
+  trim = trim,
+}
