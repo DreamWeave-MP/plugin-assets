@@ -4,8 +4,9 @@ manifest_version = 1
 id = "org.dreamweave.plugin-assets"
 version = "0.1.0"
 jess_api = "1"
+default_target = "plugin-assets"
 include = ["src"]
-tests = ["tests/run.luau", "tests/commands.luau", "tests/style.luau"]
+tests = ["tests/run.luau", "tests/commands.luau", "tests/cli.luau", "tests/style.luau"]
 
 [dependencies]
 "org.dreamweave.tes3" = "0.1"
@@ -23,6 +24,7 @@ tests = ["tests/run.luau", "tests/commands.luau", "tests/style.luau"]
 [modules]
 "@plugin-assets" = "src/init.luau"
 "@plugin-assets/commands" = "src/commands.luau"
+"@plugin-assets/cli" = "src/cli.luau"
 
 # Every module here is inert API: it does nothing until something requires it, and runs with the
 # authority of whatever calls it. A check reads the models its plugins use, and says where the
@@ -32,4 +34,16 @@ tests = ["tests/run.luau", "tests/commands.luau", "tests/style.luau"]
 [[layer]]
 id = "plugin-assets.core"
 requires = ["tes3.core", "vfs.core", "nif-assets.core"]
-exports = ["@plugin-assets", "@plugin-assets/commands"]
+exports = ["@plugin-assets", "@plugin-assets/commands", "@plugin-assets/cli"]
+
+# The command line `jess plugin assets` had: `src/main.luau` hands its arguments to
+# `@plugin-assets/cli`. A check reads the plugins named, lists their folders and the --data
+# folders, opens the --data archives, reads the models the plugins use, and resolves where each
+# file used is on disk (filesystem.read). It writes no file, reads no environment (there is no
+# openmw.cfg behind it to find), runs no other program, and opens no connection.
+
+[targets.plugin-assets]
+kind = "command"
+command = "plugin-assets"
+entry = "src/main.luau"
+capabilities = ["filesystem.read"]

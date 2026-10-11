@@ -1,0 +1,6 @@
+--!strict
+--!native
+-- The `plugin-assets` command target's entry: the command line's arguments in, the exit status out.
+local cli = require '@plugin-assets/cli'
+
+return cli.run { ... }
