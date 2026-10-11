@@ -1,0 +1,388 @@
+--!strict
+--!native
+-- `@plugin-assets/commands`: `check` over plugins named by path, asserted on the result table it
+-- returns. The first group is the harness `jess plugin assets` had (`libs/cli/tests/nif.rs` in
+-- jess's history), step for step on the inputs it built; the rest take one thing the command
+-- does around the library each: where it looks, in what order, what it reads a plugin as, and
+-- what it refuses. Nothing here prints or reads what was printed.
+local archive = require '@dream-archive'
+local commands = require '@plugin-assets/commands'
+local fixture = require './fixture'
+local fs = require '@dream/fs'
+local test = require '@jess/test'
+
+local expect = test.expect
+local suite = test.new()
+local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the suite needs a host-owned scratchRoot')
+
+--- A fresh folder under the scratch root holding `files` by their paths below it.
+local function folder(name: string, files: { [string]: string | buffer }?): string
+  local root = jess.fs.join(scratch, 'plugin-assets-commands', name)
+  if jess.fs.exists(root) then fs.remove(root, { recursive = true }) end
+
+  jess.fs.createDir(root)
+  for path, bytes in files or {} do
+    jess.fs.write(jess.fs.join(root, path), bytes)
+  end
+
+  return root
+end
+
+--- A plugin of statics, one per `{ id, model }` pair.
+local function statics(pairs: { { string } }): string
+  local records = {}
+  for _, pair in pairs do
+    table.insert(records, fixture.static(pair[1], pair[2]))
+  end
+
+  return fixture.plugin(records)
+end
+
+--- Each reference of a result as `path <- the file or archive it resolved from`.
+local function sourced(result: commands.CheckResult): { string }
+  local out = {}
+  for _, reference in result.report.references do
+    table.insert(out, `{reference.path} <- {reference.source or 'nothing'}`)
+  end
+
+  return out
+end
+
+local function meshPaths(result: commands.CheckResult): { string }
+  local out = {}
+  for _, mesh in result.report.meshes do
+    table.insert(out, mesh.path)
+  end
+
+  return out
+end
+
+local function canonical(path: string): string return fs.canonicalize(path) or path end
+
+suite.describe('jess plugin assets\' harness', function()
+  local built = fixture.build(jess.fs.join(scratch, 'plugin-assets-commands', 'harness'))
+
+  --- The request the command line made of `--show collision`, with `extra` over it.
+  local function shown(extra: { [string]: unknown }?): commands.CheckResult
+    local request: { [string]: unknown } =
+      { plugins = { built.plugin }, show = 'collision', references = false }
+    for field, value in extra or {} do
+      request[field] = value
+    end
+
+    return commands.check((request :: unknown) :: commands.CheckRequest)
+  end
+
+  suite.it('finds the models in the plugin\'s own folder, and not the texture one of them draws with', function()
+    local result = shown()
+    local summary = result.report.summary
+    expect(result.command).toBe 'check'
+    expect(summary.plugins).toEqual { 'Jess.esp' }
+    expect(summary.meshesChecked).toBe(2)
+
+    -- A missing texture of a model isn't a missing file: nothing the plugin names is missing.
+    expect(summary.missing).toBe(0)
+    expect(summary.meshesWontLoad).toBe(0)
+    expect(result.report.references).toEqual {}
+    expect(meshPaths(result)).toEqual { 'meshes/textured.nif' }
+    expect(result.report.meshes[1].findings[1].code).toBe 'missingTexture'
+  end)
+
+  suite.it('finds the texture in a data folder', function()
+    local result = shown { data = { built.textures } }
+    expect(result.report.meshes).toEqual {}
+    expect(result.report.summary.meshesChecked).toBe(2)
+    expect(result.sources).toEqual { built.textures, built.root }
+  end)
+
+  suite.it('leaves the models unchecked when told to', function()
+    local result = shown { meshes = false }
+    expect(result.report.summary.meshesChecked).toBe(0)
+    expect(result.report.meshes).toEqual {}
+  end)
+
+  suite.it('lists every reference, model, and file used when verbose', function()
+    local result = commands.check { plugins = { built.plugin }, show = 'collision', verbose = true }
+    expect(#result.report.references).toBe(2)
+    expect(meshPaths(result)).toEqual { 'meshes/rock.nif', 'meshes/textured.nif' }
+    expect(result.report.usedFiles).toEqual {
+      { file = canonical(jess.fs.join(built.root, 'meshes/rock.nif')), path = 'meshes/rock.nif', inArchive = false },
+      {
+        file = canonical(jess.fs.join(built.root, 'meshes/textured.nif')),
+        path = 'meshes/textured.nif',
+        inArchive = false,
+      },
+    }
+  end)
+
+  suite.it('lists the files the plugin loads, with where each is on disk', function()
+    local result = commands.check { plugins = { built.plugin } }
+    local used: { string } = {}
+    for _, file in result.report.usedFiles do
+      table.insert(used, file.path)
+    end
+
+    expect(used).toContain 'meshes/rock.nif'
+    expect(result.plugins).toEqual { { name = 'Jess.esp', path = built.plugin } }
+  end)
+
+  suite.it('counts a model that isn\'t anywhere as missing', function()
+    local removed = fixture.build(jess.fs.join(scratch, 'plugin-assets-commands', 'harness-missing'))
+    jess.fs.remove(jess.fs.join(removed.root, 'meshes/rock.nif'))
+
+    local result =
+      commands.check { plugins = { removed.plugin }, show = 'collision', references = false, meshes = false }
+    expect(result.report.summary.missing).toBe(1)
+    expect(result.report.findings).toEqual {
+      {
+        severity = 'missingAsset',
+        code = 'missingMesh',
+        message = 'model "rock.nif" not found at meshes/rock.nif',
+        plugin = 'Jess.esp',
+        recordType = 'STAT',
+        id = 'jess_rock',
+        path = 'rock.nif',
+      },
+    }
+  end)
+end)
+
+suite.describe('lookups', function()
+  -- Models are only names here: no case below checks one.
+  local function layers(): (string, string, string)
+    local first = folder('first', {
+      ['meshes/one.nif'] = 'first',
+      ['meshes/two.nif'] = 'first',
+      ['meshes/three.nif'] = 'first',
+    })
+
+    local second = folder('second', { ['meshes/one.nif'] = 'second', ['meshes/two.nif'] = 'second' })
+    local own = folder('own', {
+      ['meshes/two.nif'] = 'own',
+      ['Order.esp'] = statics { { 'one', 'one.nif' }, { 'two', 'two.nif' }, { 'three', 'three.nif' } },
+    })
+
+    return first, second, own
+  end
+
+  suite.it('take a later data folder over an earlier one, and the plugin\'s own folder over both', function()
+    local first, second, own = layers()
+    local result = commands.check {
+      plugins = { jess.fs.join(own, 'Order.esp') },
+      data = { first, second },
+      meshes = false,
+    }
+
+    expect(result.sources).toEqual { first, second, own }
+    expect(sourced(result)).toEqual {
+      `one.nif <- {jess.fs.join(second, 'meshes/one.nif')}`,
+      `two.nif <- {jess.fs.join(own, 'meshes/two.nif')}`,
+      `three.nif <- {jess.fs.join(first, 'meshes/three.nif')}`,
+    }
+  end)
+
+  suite.it('leave a folder already named where it is, as jess-assets did', function()
+    local first, second, own = layers()
+    local result = commands.check {
+      plugins = { jess.fs.join(own, 'Order.esp') },
+      data = { own, first, second, first },
+      meshes = false,
+    }
+
+    -- The plugin's folder was named as data first, so the data folders after it win over it.
+    expect(result.sources).toEqual { own, first, second }
+    expect(sourced(result)[2]).toBe(`two.nif <- {jess.fs.join(second, 'meshes/two.nif')}`)
+  end)
+
+  suite.it('add each plugin\'s folder in the order the plugins are named', function()
+    local early = folder('early', {
+      ['meshes/shared.nif'] = 'early',
+      ['Early.esp'] = statics { { 'early', 'shared.nif' } },
+    })
+
+    local late = folder('late', {
+      ['meshes/shared.nif'] = 'late',
+      ['Late.esp'] = statics { { 'late', 'shared.nif' } },
+    })
+
+    local result = commands.check {
+      plugins = { jess.fs.join(early, 'Early.esp'), jess.fs.join(late, 'Late.esp') },
+      meshes = false,
+    }
+
+    expect(result.sources).toEqual { early, late }
+    expect(result.report.summary.plugins).toEqual { 'Early.esp', 'Late.esp' }
+    expect(sourced(result)).toEqual {
+      `shared.nif <- {jess.fs.join(late, 'meshes/shared.nif')}`,
+      `shared.nif <- {jess.fs.join(late, 'meshes/shared.nif')}`,
+    }
+  end)
+
+  suite.it('look in an archive given as data, where it comes in the order', function()
+    local loose = folder('loose', { ['meshes/both.nif'] = 'loose' })
+    local own = folder('archived', {
+      ['Packed.esp'] = statics { { 'packed', 'packed.nif' }, { 'both', 'both.nif' } },
+    })
+
+    local pack = jess.fs.join(own, 'packs/Pack.bsa')
+    local builder = archive.bsa.tes3.Builder.new()
+    builder:addBytes('meshes/packed.nif', 'archived')
+    builder:addBytes('meshes/both.nif', 'archived')
+    jess.fs.createDir(jess.fs.join(own, 'packs'))
+    builder:writePath(pack)
+
+    local plugin = jess.fs.join(own, 'Packed.esp')
+    local result = commands.check { plugins = { plugin }, data = { loose, pack }, meshes = false }
+    expect(result.sources).toEqual { loose, pack, own }
+    expect(sourced(result)).toEqual { `packed.nif <- {pack}`, `both.nif <- {pack}` }
+    expect(result.report.usedFiles).toEqual {
+      { file = canonical(pack), path = 'meshes/both.nif', inArchive = true },
+      { file = canonical(pack), path = 'meshes/packed.nif', inArchive = true },
+    }
+
+    local reversed = commands.check { plugins = { plugin }, data = { pack, loose }, meshes = false }
+    expect(sourced(reversed)).toEqual {
+      `packed.nif <- {pack}`,
+      `both.nif <- {jess.fs.join(loose, 'meshes/both.nif')}`,
+    }
+  end)
+end)
+
+suite.describe('plugins', function()
+  suite.it('are each checked for everything they name, a later one overriding nothing', function()
+    local root = folder('every-copy', {
+      ['meshes/new.nif'] = 'new',
+      ['Base.esm'] = statics { { 'tree', 'old.nif' } },
+      ['Mod.esp'] = statics { { 'TREE', 'new.nif' } },
+    })
+
+    local result = commands.check {
+      plugins = { jess.fs.join(root, 'Base.esm'), jess.fs.join(root, 'Mod.esp') },
+      meshes = false,
+    }
+
+    expect(result.report.summary.references).toBe(2)
+    expect(result.report.summary.missing).toBe(1)
+    expect(result.report.findings[1].plugin).toBe 'Base.esm'
+    expect(result.report.findings[1].message).toBe 'model "old.nif" not found at meshes/old.nif'
+  end)
+
+  suite.it('read a script list as its text', function()
+    local root = folder('script-list', {
+      ['scripts/there.lua'] = '',
+      ['Mod.omwscripts'] = 'PLAYER: scripts/there.lua\nGLOBAL: scripts/gone.lua\nCUSTOM scripts/flagless.lua\n',
+    })
+
+    local result = commands.check { plugins = { jess.fs.join(root, 'Mod.omwscripts') } }
+    expect(result.plugins).toEqual { { name = 'Mod.omwscripts', path = jess.fs.join(root, 'Mod.omwscripts') } }
+    expect(sourced(result)).toEqual {
+      `scripts/there.lua <- {jess.fs.join(root, 'scripts/there.lua')}`,
+      'scripts/gone.lua <- nothing',
+    }
+    expect(result.report.summary.byCode).toEqual { missingScript = 1, omwscriptsError = 1 }
+  end)
+
+  suite.it('that can\'t be read are in the result, and the rest are still checked', function()
+    local root = folder('unreadable', {
+      ['meshes/rock.nif'] = fixture.rock(),
+      ['Junk.esp'] = 'junk',
+      ['Good.esp'] = statics { { 'rock', 'rock.nif' } },
+    })
+
+    jess.fs.createDir(jess.fs.join(root, 'Folder.esp'))
+
+    local junk, good = jess.fs.join(root, 'Junk.esp'), jess.fs.join(root, 'Good.esp')
+    local directory = jess.fs.join(root, 'Folder.esp')
+    local result = commands.check { plugins = { junk, good, directory } }
+    local problem = `failed to read '{junk}': truncated record header at offset 0`
+    expect(result.plugins[1]).toEqual { name = 'Junk.esp', path = junk, problem = problem }
+    expect(result.plugins[2]).toEqual { name = 'Good.esp', path = good }
+    expect(result.plugins[3].problem).toContain(`failed to read '{directory}': `)
+    expect(result.report.summary.plugins).toEqual { 'Junk.esp', 'Good.esp', 'Folder.esp' }
+    expect(result.report.summary.unreadablePlugins).toBe(2)
+    expect(result.report.summary.meshesChecked).toBe(1)
+    expect(result.report.findings[1]).toEqual {
+      severity = 'wontLoad',
+      code = 'unreadablePlugin',
+      message = problem,
+      plugin = 'Junk.esp',
+      recordType = '',
+      id = '',
+      path = '',
+    }
+  end)
+
+  suite.it('have their text read in the code page asked for', function()
+    local root = folder('encoding', { ['Text.esp'] = statics { { 'st\xe0tic', 'gone.nif' } } })
+    local plugin = jess.fs.join(root, 'Text.esp')
+    local western = commands.check { plugins = { plugin }, meshes = false }
+    local cyrillic = commands.check { plugins = { plugin }, meshes = false, encoding = 'win1251' }
+    expect(western.report.findings[1].id).toBe 'stàtic'
+    expect(cyrillic.report.findings[1].id).toBe 'stаtic'
+  end)
+
+  suite.it('whose model OpenMW won\'t load say so in the summary and under the model', function()
+    local root = folder('wont-load', {
+      ['meshes/broken.nif'] = fixture.broken(),
+      ['Broken.esp'] = statics { { 'broken', 'broken.nif' } },
+    })
+
+    local result = commands.check { plugins = { jess.fs.join(root, 'Broken.esp') }, show = 'wontLoad' }
+    expect(result.report.summary.meshesWontLoad).toBe(1)
+    expect(result.report.summary.missing).toBe(0)
+    expect(result.report.meshes[1].worst).toBe 'wontLoad'
+    expect(result.report.meshes[1].usedBy).toEqual { 'STAT broken' }
+  end)
+end)
+
+suite.describe('refusals', function()
+  local root = folder('refusals', {
+    ['Mod.esp'] = statics { { 'rock', 'rock.nif' } },
+    ['notes.txt'] = 'not data',
+    ['Junk.bsa'] = 'not an archive',
+  })
+
+  local plugin = jess.fs.join(root, 'Mod.esp')
+
+  local function refused(request: { [string]: unknown }, message: string)
+    expect(function() commands.check((request :: unknown) :: commands.CheckRequest) end).toThrow(message)
+  end
+
+  suite.it('raise for a request with no plugins, or a plugin that isn\'t there', function()
+    refused({ plugins = {} }, 'no plugins to check')
+    refused({}, 'no plugins to check')
+
+    local missing = jess.fs.join(root, 'Gone.esp')
+    refused({ plugins = { plugin, missing } }, `'{missing}' doesn't exist; jess takes plugins by their path`)
+  end)
+
+  suite.it('raise for a data path that isn\'t there, or is no folder or archive', function()
+    local missing = jess.fs.join(root, 'nowhere')
+    refused({ plugins = { plugin }, data = { missing } }, `'{missing}' doesn't exist`)
+
+    for _, name in { 'notes.txt', 'Junk.bsa', 'Mod.esp' } do
+      local path = jess.fs.join(root, name)
+      refused(
+        { plugins = { plugin }, data = { path } },
+        `'{path}' isn't a directory, NIF, KF, or archive`
+      )
+    end
+  end)
+
+  suite.it('raise for an encoding, a severity, or a field that doesn\'t exist', function()
+    refused(
+      { plugins = { plugin }, encoding = 'koi8' },
+      'unknown encoding \'koi8\': expected win1250, win1251, or win1252'
+    )
+    refused(
+      { plugins = { plugin }, show = 'files' },
+      'unknown severity \'files\': expected wontLoad, broken, missingAsset, collision, performance, or info'
+    )
+    refused(
+      { plugins = { plugin }, config = 'openmw.cfg' },
+      'plugin-assets: unknown request field \'config\': expected data, encoding, meshes, plugins, references, show, or verbose'
+    )
+  end)
+end)
+
+return suite

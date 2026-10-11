@@ -1,0 +1,213 @@
+--!strict
+--!native
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+
+--[[
+@plugin-assets/commands: what `jess plugin assets` did between reading its arguments and
+printing. One command, `check`: it takes one request, a table of plain data, and returns one
+result, a table of plain data tagged with the command that made it: everything a person at a
+terminal would have been shown, and nothing worded or laid out for one.
+
+  check(request)  every file the plugins named refer to, looked up as OpenMW finds them, and the
+                  NIF check of every model that leads to
+
+The plugins are named by path and are no load order: each is checked for everything it refers to,
+whether or not a later one overrides the record, and nothing reads an openmw.cfg. Files are
+looked up in the `data` folders and archives, later ones winning, and then in the folder each
+plugin is in, as if it were installed last, in the order the plugins are named. A folder or
+archive already in that list, spelled the same way, keeps the place it has.
+
+This is the caller's work `@plugin-assets`' `check` leaves out: opening each plugin (only the
+record types that name files are kept, the rest framed, so a plugin that doesn't parse still
+fails), reading an `.omwscripts` file as text, and building the one VFS the lookups go through.
+`show`, `verbose`, `meshes`, and `references` are that function's options and go to it as they
+are: it leaves out the findings and models `show` doesn't reach, and nothing here filters.
+
+Nothing here reads an argument list, the environment, or standard input, nothing prints, and
+nothing is written: a check only reads, so there is no dry run to ask for. A plugin that can't be
+read or doesn't parse is in the result, as a finding and under `plugins`; the rest are still
+checked. A request that can't be carried out at all raises its reason as a string: no plugins, a
+plugin or data path that isn't there, a data path that is no folder or archive, an encoding or
+severity that doesn't exist.
+]]
+
+local fs = require '@dream/fs'
+local pluginAssets = require '@plugin-assets'
+local tes3 = require '@tes3'
+local vfs = require '@vfs'
+
+--- The code page a plugin's text is in.
+export type Encoding = 'win1250' | 'win1251' | 'win1252'
+
+export type CheckRequest = {
+  --- The plugins to check, by path, in the order to read them: TES3 plugins, or `.omwscripts`
+  --- script lists.
+  plugins: { string },
+  --- Data folders and archives (`.bsa`, `.ba2`) to look files up in. Later ones win, and the
+  --- plugins' own folders win over all of them.
+  data: { string }?,
+  --- The code page the plugins' text is in; `win1252` without one.
+  encoding: Encoding?,
+  --- Whether the models the plugins use are run through the NIF check; true without it.
+  meshes: boolean?,
+  --- Whether the result lists every reference and every file used; true without it. `false`
+  --- leaves `report.references` and `report.usedFiles` empty, and skips finding where each file
+  --- is on disk.
+  references: boolean?,
+  --- The least severe findings the result lists; all of them without one. Models left with no
+  --- finding to list are left out. The summary counts everything either way.
+  show: pluginAssets.Severity?,
+  --- List every finding and every model, whatever `show` says.
+  verbose: boolean?,
+}
+
+--- A plugin as it was read: the name the report calls it by (its file name), the path given,
+--- and why it couldn't be read, when it couldn't.
+export type PluginFile = { name: string, path: string, problem: string? }
+
+export type CheckResult = {
+  command: 'check',
+  --- Every plugin named, in the order given.
+  plugins: { PluginFile },
+  --- The folders and archives files were looked up in, the one that wins last: the request's
+  --- `data`, then the plugins' own folders.
+  sources: { string },
+  --- `report.summary` counts every reference and model, whatever `show` left out of the lists.
+  report: pluginAssets.Report,
+}
+
+local RequestKeys: { [string]: boolean } = {
+  plugins = true,
+  data = true,
+  encoding = true,
+  meshes = true,
+  references = true,
+  show = true,
+  verbose = true,
+}
+
+local Encodings: { [string]: boolean } = { win1250 = true, win1251 = true, win1252 = true }
+
+--- The extensions a data path that is a file can have, as jess-assets took them. Only Bethesda's
+--- archives open: jess was built without vfstool's zip support, and `@vfs` has none, so a `.zip`
+--- or `.7z` is no archive there or here.
+local Archives: { [string]: boolean } = { bsa = true, ba2 = true, zip = true, ['7z'] = true }
+
+local Kept: { [string]: boolean } = { TES3 = true }
+for _, tag in pluginAssets.recordTypes do
+  Kept[tag] = true
+end
+
+--- The header and the record types that name files are read; the rest are only framed, so a
+--- plugin whose records don't frame still fails to open.
+local function keep(tag: string): tes3.Keep return if Kept[tag] then 'whole' else 'framed' end
+
+--- A file name's extension in lowercase, or nil without one.
+local function extension(path: string): string?
+  local name = jess.fs.fileName(path) or path
+  local found = string.match(name, '^.+%.([^.]*)$')
+  return if found then string.lower(found) else nil
+end
+
+--- What `@dream/fs` or `@vfs` said went wrong, without the name of the function that said it.
+local function reason(message: unknown, said: string): string
+  local text = tostring(message)
+  if string.sub(text, 1, #said) == said then return string.sub(text, #said + 1) end
+
+  return text
+end
+
+--- A plugin as `check` takes one: opened, an `.omwscripts` file's text, or why neither.
+local function open(path: string, name: string, encoding: Encoding): pluginAssets.Input
+  local bytes, unread = fs.readFile(path)
+  if not bytes then
+    local why = reason(unread, `dream.fs.readFile: {path}: `)
+    return { name = name, problem = `failed to read '{path}': {why}` }
+  end
+
+  if extension(path) == 'omwscripts' then
+    return { name = name, scripts = tes3.lossyUtf8(buffer.tostring(bytes)) }
+  end
+
+  -- tes3.open throws on bytes that don't frame as records, and that's why the plugin wasn't read.
+  local opened, plugin = pcall(tes3.open, bytes, { encoding = encoding, keep = keep })
+  if not opened then return { name = name, problem = `failed to read '{path}': {plugin}` } end
+
+  return { name = name, plugin = plugin :: tes3.Plugin }
+end
+
+--- Puts the data folder or archive `root` over what `lookup` holds, unless `sources` already has
+--- it under that spelling.
+local function addData(lookup: vfs.VFS, sources: { string }, root: string)
+  local info = fs.stat(root)
+  if not info then error(`'{root}' doesn't exist`, 0) end
+
+  if table.find(sources, root) then return end
+
+  if info.isDir then
+    -- VFS:pushDirectory raises when the folder, or one under it, can't be listed.
+    local pushed, problem = pcall(lookup.pushDirectory, lookup, root)
+    if not pushed then error(`failed to read '{root}': {reason(problem, 'dream.vfs: ')}`, 0) end
+  elseif not Archives[extension(root) or ''] or not lookup:pushArchive(root) then
+    error(`'{root}' isn't a directory, NIF, KF, or archive`, 0)
+  end
+
+  table.insert(sources, root)
+end
+
+--- Checks the files the request's plugins refer to.
+local function check(request: CheckRequest): CheckResult
+  for field in (request :: unknown) :: { [string]: unknown } do
+    if RequestKeys[field] then continue end
+
+    error(
+      `plugin-assets: unknown request field '{field}': expected data, encoding, meshes, plugins, references, show, or verbose`,
+      0
+    )
+  end
+
+  local paths = request.plugins
+  if type(paths) ~= 'table' or #paths == 0 then error('no plugins to check', 0) end
+
+  local encoding: Encoding = request.encoding or 'win1252'
+  if not Encodings[encoding] then
+    error(`unknown encoding '{encoding}': expected win1250, win1251, or win1252`, 0)
+  end
+
+  for _, path in paths do
+    if not fs.exists(path) then error(`'{path}' doesn't exist; jess takes plugins by their path`, 0) end
+  end
+
+  local lookup = vfs.VFS.new()
+  local sources: { string } = {}
+  for _, root in request.data or {} do
+    addData(lookup, sources, root)
+  end
+
+  -- A plugin finds the files shipped beside it: its folder, the current one for a bare name.
+  for _, path in paths do
+    local folder = jess.fs.parent(path)
+    if folder then addData(lookup, sources, if folder == '' then '.' else folder) end
+  end
+
+  local inputs: { pluginAssets.Input } = {}
+  local files: { PluginFile } = {}
+  for _, path in paths do
+    local name = jess.fs.fileName(path) or path
+    local input = open(path, name, encoding)
+    table.insert(inputs, input)
+    table.insert(files, { name = name, path = path, problem = input.problem })
+  end
+
+  local report = pluginAssets.check(inputs, lookup, {
+    meshes = request.meshes,
+    references = request.references,
+    show = request.show,
+    verbose = request.verbose,
+    winningOnly = false,
+  })
+
+  return { command = 'check', plugins = files, sources = sources, report = report }
+end
+
+return table.freeze { check = check }
