@@ -43,7 +43,7 @@ error as `plugin-assets: <message>`.
 local commands = require '@plugin-assets/commands'
 local pluginAssets = require '@plugin-assets'
 local process = require '@dream/process'
-local serialize = require '@vfs/serialize'
+local serialize = require '@jess/data/value'
 
 type Value = serialize.Value
 
