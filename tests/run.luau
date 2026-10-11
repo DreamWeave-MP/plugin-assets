@@ -764,6 +764,27 @@ suite.describe('a load order', function()
     expect(report.findings[1].plugin).toBe 'Base.esm'
   end)
 
+  suite.it('counts every plugin\'s copy of a record when the plugins are no load order', function()
+    local _, lookup = data('every-copy', { ['meshes/b.nif'] = shape() })
+    local report = pluginAssets.check({
+      { name = 'Base.esm', plugin = plugin { static('tree', 'a.nif'), static('Rock', 'gone.nif') } },
+      { name = 'Mod.esp', plugin = plugin { static('TREE', 'b.nif') } },
+    }, lookup, { winningOnly = false })
+    expect(report.summary.references).toBe(3)
+
+    expect(led(report)).toEqual {
+      'mesh a.nif -> nothing',
+      'mesh gone.nif -> nothing',
+      'mesh b.nif -> meshes/b.nif',
+    }
+
+    expect(said(report)).toEqual {
+      'missingMesh STAT tree: model "a.nif" not found at meshes/a.nif',
+      'missingMesh STAT Rock: model "gone.nif" not found at meshes/gone.nif',
+    }
+    expect(report.findings[1].plugin).toBe 'Base.esm'
+  end)
+
   suite.it('reports a file that couldn\'t be read, and still reads the rest', function()
     local _, lookup = data('unreadable', {})
     local report = pluginAssets.check({
@@ -1093,7 +1114,7 @@ suite.describe('options', function()
   suite.it('refuse an option it doesn\'t have', function()
     local _, lookup = data('unknown-option', {})
     expect(function() pluginAssets.check({}, lookup, { data = 'x' } :: any) end).toThrow(
-      'plugin-assets: unknown option \'data\': expected meshes, references, show, or verbose'
+      'plugin-assets: unknown option \'data\': expected meshes, references, show, verbose, or winningOnly'
     )
   end)
 

@@ -10,9 +10,10 @@ order, a port of jess-assets' plugin report.
 `check` takes the load order's content files in load order, already read (a plugin `@load-order`
 opened, an `.omwscripts` file's text, or why a file couldn't be read), and the VFS to look their
 files up in, normally the load order's own (an `@openmw` Context's `vfs()`). A record a later
-plugin overrides counts only in the later one. It reports, per reference, what is missing or
-read wrong, and per model, what `@nif-assets` finds in it, in the shapes jess's reports had:
-camelCase fields and codes.
+plugin overrides counts only in the later one, unless `winningOnly` is turned off for plugins
+that are no load order: ones named on their own, each checked for everything it refers to. It
+reports, per reference, what is missing or read wrong, and per model, what `@nif-assets` finds in
+it, in the shapes jess's reports had: camelCase fields and codes.
 
 Lookups follow `components/misc/resourcehelpers.cpp`: models are used as written under `meshes`,
 icons, textures, and book images are searched for and prefer `.dds`, sounds fall back to `.mp3`.
@@ -56,6 +57,10 @@ export type Options = {
   show: Severity?,
   --- Every finding and every model, whatever `show` says.
   verbose: boolean?,
+  --- `false` counts every input's records, where a load order counts a record only in the last
+  --- input to name a file in it: for plugins named on their own rather than read as a load
+  --- order, as `jess plugin assets` read the ones it was given.
+  winningOnly: boolean?,
 }
 
 --- A problem with a reference, or with a record's text.
@@ -134,7 +139,8 @@ for rank, severity in Severities do
   SeverityRank[severity] = rank
 end
 
-local OptionKeys: { [string]: boolean } = { meshes = true, references = true, show = true, verbose = true }
+local OptionKeys: { [string]: boolean } =
+  { meshes = true, references = true, show = true, verbose = true, winningOnly = true }
 
 --- Record types whose models never collide as the NIF says: actors and their body parts
 --- collide by their bounding box.
@@ -333,10 +339,10 @@ local function resolve(reference: Reference, exists: (string) -> boolean): Resol
   return resolution
 end
 
---- What every input refers to, with a record a later input overrides counting only in the later
---- one, as in a load order: its references and problems, the statics every plugin's magic
---- effects use as visuals, and the inputs that couldn't be read.
-local function collect(inputs: { Input }): (references.Found, { Input })
+--- What every input refers to: its references and problems, the statics every plugin's magic
+--- effects use as visuals, and the inputs that couldn't be read. With `winningOnly`, a record a
+--- later input overrides counts only in the later one, as in a load order.
+local function collect(inputs: { Input }, winningOnly: boolean): (references.Found, { Input })
   local collected: { references.Found } = {}
   local unreadable: { Input } = {}
   for _, input in inputs do
@@ -367,19 +373,21 @@ local function collect(inputs: { Input }): (references.Found, { Input })
     end
   end
 
+  -- Records without an id all apply rather than override each other.
+  local function wins(index: number, recordType: string, id: string): boolean
+    return not winningOnly or id == '' or winners[key(recordType, id)] == index
+  end
+
   local merged: references.Found = { references = {}, problems = {}, effectVisuals = {} }
   for index, found in collected do
-    -- Records without an id all apply rather than override each other.
     for _, reference in found.references do
-      if reference.id == '' or winners[key(reference.recordType, reference.id)] == index then
+      if wins(index, reference.recordType, reference.id) then
         table.insert(merged.references, reference)
       end
     end
 
     for _, problem in found.problems do
-      if problem.id == '' or winners[key(problem.recordType, problem.id)] == index then
-        table.insert(merged.problems, problem)
-      end
+      if wins(index, problem.recordType, problem.id) then table.insert(merged.problems, problem) end
     end
 
     table.move(found.effectVisuals, 1, #found.effectVisuals, #merged.effectVisuals + 1, merged.effectVisuals)
@@ -551,7 +559,7 @@ local function check(inputs: { Input }, lookup: vfs.VFS, options: Options?): Rep
     if OptionKeys[option] then continue end
 
     error(
-      `plugin-assets: unknown option '{option}': expected meshes, references, show, or verbose`,
+      `plugin-assets: unknown option '{option}': expected meshes, references, show, verbose, or winningOnly`,
       0
     )
   end
@@ -563,7 +571,7 @@ local function check(inputs: { Input }, lookup: vfs.VFS, options: Options?): Rep
 
   -- Only `false` turns either off: nil is the default, which is on.
   local keepReferences, wantMeshes = given.references ~= false, given.meshes ~= false
-  local found, unreadable = collect(inputs)
+  local found, unreadable = collect(inputs, given.winningOnly ~= false)
   local summary: Summary = {
     plugins = {},
     unreadablePlugins = #unreadable,
