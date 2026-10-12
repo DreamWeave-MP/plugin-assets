@@ -526,6 +526,75 @@ suite.describe('references', function()
     }
   end)
 
+  suite.it('read a script line by line, a file being what follows a function on its own line', function()
+    local text = '\n'
+      -- The function's name inside a string, or as part of a longer word, calls nothing.
+      .. 'MessageBox "say what" "quoted.mp3"\n'
+      .. 'set saying to 1\n'
+      .. 'essay "word.mp3"\n'
+      -- Two calls on one line, and a call whose file would be on the next.
+      .. 'SAY "one.wav" StreamMusic two.mp3\r\n'
+      .. 'PlayBink\n'
+      .. '"next.bik"\n'
+      -- Two functions in a row: the first takes the second's name as its file.
+      .. 'say playbink three.bik\n'
+      -- A string left open runs to the end of its line, without the carriage return.
+      .. 'Say "open.wav\r\n'
+      .. '\tplayer -> say, ( "paren.wav" )\n'
+      .. 'streammusic last.mp3'
+    local report = check('script-lines', { { type = 'Script', id = 'jess_lines', text = text } })
+    expect(led(report)).toEqual {
+      'voice one.wav -> nothing',
+      'music two.mp3 -> nothing',
+      'voice playbink -> nothing',
+      'video three.bik -> nothing',
+      'voice open.wav -> nothing',
+      'voice paren.wav -> nothing',
+      'music last.mp3 -> nothing',
+    }
+  end)
+
+  suite.it('read a response\'s sound file and result, and nothing from one that names no file', function()
+    local function response(id: string, fields: { [string]: string }): tes3.Value
+      local info: { [string]: unknown } = { type = 'DialogueInfo', id = id }
+      for field, value in fields do
+        info[field] = value
+      end
+
+      return info
+    end
+
+    local report = check('responses', {
+      { type = 'Script', id = 'jess_quiet', text = 'begin jess_quiet\n\tMessageBox "They say so."\nend' },
+      { type = 'Dialogue', id = 'Rumors' },
+      response('1', {}),
+      response('2', { text = 'They say the music is better in Balmora.' }),
+      response('3', { text = 'I would not say.', scriptText = 'Journal "jess" 10\r\nGoodbye' }),
+      response('4', { scriptText = 'Choice "Say nothing." 1' }),
+      response('5', { soundPath = 'vo\\five.mp3' }),
+      response('6', { text = 'Listen.', scriptText = 'STREAMMUSIC "Six.mp3"' }),
+      response('7', { soundPath = 'vo\\seven.mp3', scriptText = '; quiet\r\nsay "seven.wav" "Seven"' }),
+      { type = 'Dialogue', id = 'Greeting 1' },
+      response('8', { scriptText = 'PlayBink "eight.bik"' }),
+    })
+
+    expect(led(report)).toEqual {
+      'voice vo\\five.mp3 -> nothing',
+      'music Six.mp3 -> nothing',
+      'voice vo\\seven.mp3 -> nothing',
+      'voice seven.wav -> nothing',
+      'video eight.bik -> nothing',
+    }
+
+    local ids = {}
+    for _, finding in report.findings do
+      table.insert(ids, finding.id)
+    end
+
+    expect(ids).toEqual { 'Rumors: 5', 'Rumors: 6', 'Rumors: 7', 'Rumors: 7', 'Greeting 1: 8' }
+    expect(report.summary.references).toBe(5)
+  end)
+
   suite.it('read a book\'s images as OpenMW\'s parser does', function()
     local text = '<DIV ALIGN="CENTER"><IMG SRC="map.tga" WIDTH="240" HEIGHT="180"><BR>\n'
       .. '<img src=nosize.tga><IMG SRC=\'img://Icons/X.dds\'>'
