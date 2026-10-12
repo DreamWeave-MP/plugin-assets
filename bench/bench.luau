@@ -1,0 +1,952 @@
+--!strict
+--!native
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+
+--[[
+plugin-assets, timed through its public modules: a check of a load order, with and without the
+references listed, counted as a load order and as plugins named on their own; a check of one kind
+of record at a time; the models a patch uses run through the NIF check; a script list; the
+command over plugins named by path; the argument list read; and every document the command line
+prints. And the command line itself, run once.
+
+  jess run --capability filesystem.read --capability filesystem.write \
+    --capability process.spawn --package . --package-path .. \
+    bench/bench.luau <scratch> [filter] [jess binary] [package path]
+
+The plugins are built here with `@tes3`, with the mix of records a master has at about a quarter
+of Morrowind.esm's size: dialogue responses are most of it, a third of them with a result script,
+then statics, NPCs that share a model per race and sex, body parts, containers, lights, books,
+and items that share models and icons, scripts of some forty lines, and the records that name no
+file at all. A patch overrides one record in sixteen under another spelling of its id and adds
+its own. The data folder under `<scratch>` holds what most of the references lead to: small
+models built with `@nif`, and empty files for the rest, since a lookup never opens one.
+
+One line per workload, `name<TAB>seconds per call`: the median of seven batches of about a tenth
+of a second each, with a full collection between batches. Every workload's answer is weighed
+before the first batch and after the last, outside the time, and compared with the one pinned
+here, so a path that stops doing its work fails instead of posting a time.
+
+Given the jess binary to start (and `process.spawn`), the cold workloads too: what one process
+pays for one command from its first `require` on. Each is the median of seven processes running
+`cold.luau`, which find the packages this one depends on in the package path, the folder above
+this package without one.
+]]
+
+local bytes = require '@dream/bytes'
+local cli = require '@plugin-assets/cli'
+local commands = require '@plugin-assets/commands'
+local fs = require '@dream/fs'
+local nif = require '@nif'
+local pluginAssets = require '@plugin-assets'
+local process = require '@dream/process'
+local tes3 = require '@tes3'
+local vfs = require '@vfs'
+
+-- A build without the verified toolchain runs Luau slower than a release does, so a number from
+-- one says nothing about what ships.
+if not jess.bench.verified then
+  error(
+    'plugin-assets bench: this jess was built without the verified toolchain: measure on a release',
+    0
+  )
+end
+
+local given: string?, filter: string?, binary: string?, packages: string? = ...
+if not given then error('plugin-assets bench: a scratch folder is required', 0) end
+
+-- A report names the files used by their canonical paths, and the scratch folder's own name is
+-- taken out of every answer before it is weighed: so the folder goes by its canonical name.
+assert(fs.mkdir(given, { recursive = true }))
+
+local scratch = assert(fs.canonicalize(given))
+
+local Wanted = if filter and filter ~= '' then string.split(filter, '|') else nil
+
+--- Whether the workload called `name` runs: every one without a filter, else those whose name
+--- holds one of the filter's parts, which `|` separates.
+local function runs(name: string): boolean
+  if not Wanted then return true end
+
+  for _, part in Wanted do
+    if string.find(name, part, 1, true) then return true end
+  end
+
+  return false
+end
+
+--- Where this file is, from its chunk name.
+local function here(): string
+  local source = debug.info(1, 's')
+  local first = string.sub(source, 1, 1)
+  local path = if first == '@' or first == '=' then string.sub(source, 2) else source
+
+  return string.match(path, '^(.*)/[^/]*$') or '.'
+end
+
+local Here = here()
+local PackagePath = packages or `{Here}/../..`
+
+local function median(samples: { number }): number
+  table.sort(samples)
+  return samples[(#samples + 1) // 2]
+end
+
+--- Times `body`. `weigh` makes a number of what a call returned, outside the time, and that
+--- number must be `expected`.
+local function workload<Answer>(
+  name: string,
+  expected: number,
+  body: () -> Answer,
+  weigh: (answer: Answer) -> number
+)
+  if not runs(name) then return end
+
+  local function verify()
+    local weight = weigh(body())
+    if weight ~= expected then error(`{name}: answered {weight}, not {expected}`, 0) end
+  end
+
+  jess.bench.collect()
+  verify()
+  local start = os.clock()
+  body()
+  local single = math.max(os.clock() - start, 1e-7)
+  local iterations = math.max(1, math.floor(0.1 / single))
+  local samples = {}
+  for batch = 1, 7 do
+    jess.bench.collect()
+    start = os.clock()
+    for _ = 1, iterations do
+      body()
+    end
+
+    samples[batch] = (os.clock() - start) / iterations
+  end
+
+  verify()
+  print(`{name}\t{string.format('%.9f', median(samples))}`)
+end
+
+local ScratchPattern = string.gsub(scratch, '%p', '%%%0')
+
+--- A document's checksum and length as one whole number, with the scratch folder's own name,
+--- which is the caller's choice, taken out of it.
+local function textWeight(text: string): number
+  local portable = string.gsub(text, ScratchPattern, '')
+  return bytes.crc32(portable) * 2 ^ 20 + #portable % 2 ^ 20
+end
+
+--- The keys of `counts` in order, each with its count.
+local function countLines(lines: { string }, counts: { [string]: number })
+  local codes = {}
+  for code in counts do
+    table.insert(codes, code)
+  end
+
+  table.sort(codes)
+  for _, code in codes do
+    table.insert(lines, `{code}={counts[code]}`)
+  end
+end
+
+--- Everything a report says, as one number: its summary, findings, references, models, and the
+--- files used, each spelled out in the order the report has it.
+local function reportWeight(report: pluginAssets.Report): number
+  local summary = report.summary
+  local lines = {
+    table.concat(summary.plugins, ','),
+    `{summary.unreadablePlugins} {summary.references} {summary.files} {summary.missing}`,
+    `{summary.meshesChecked} {summary.meshesWontLoad}`,
+  }
+
+  countLines(lines, summary.byCode)
+  countLines(lines, summary.meshesByCode)
+  for _, finding in report.findings do
+    table.insert(
+      lines,
+      `{finding.severity} {finding.code} {finding.plugin} {finding.recordType} {finding.id} {finding.path} {finding.message}`
+    )
+  end
+
+  for _, reference in report.references do
+    table.insert(
+      lines,
+      `{reference.plugin} {reference.recordType} {reference.id} {reference.kind} {reference.path} {reference.resolved} {reference.source}`
+    )
+  end
+
+  for _, mesh in report.meshes do
+    table.insert(lines, `{mesh.path} {mesh.worst} {#mesh.findings} {table.concat(mesh.usedBy, ',')}`)
+    for _, texture in mesh.textures do
+      table.insert(lines, `{texture.path} {texture.resolved}`)
+    end
+  end
+
+  for _, file in report.usedFiles do
+    table.insert(lines, `{file.file} {file.path} {file.inArchive}`)
+  end
+
+  return textWeight(table.concat(lines, '\n'))
+end
+
+local Triangle = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } }
+
+--- A triangle under a root node, drawn with `texture` when one is named.
+local function model(texture: string?): buffer
+  local file = nif.new()
+  local root = file:insert { type = 'NiNode', name = 'Bench' }
+  file:shape {
+    name = 'Tri Bench',
+    vertices = Triangle,
+    triangles = { { 0, 1, 2 } },
+    texture = texture,
+    parent = root,
+  }
+  file.roots = { root }
+
+  return file:save()
+end
+
+--- A model the NIF check has a `broken` and a `collision` finding for: an editor marker that
+--- draws, and a lowercase `NCc`, which turns collision off.
+local function defects(): buffer
+  local file = nif.new()
+  local root = file:insert { type = 'NiNode', name = 'Root' }
+  local lowercase = file:insert { type = 'NiStringExtraData', value = 'NCc', bytesRemaining = 7 }
+  local rootNode = file:record(root) :: { [string]: unknown }
+  rootNode.extraData = lowercase
+  file:shape {
+    name = 'Tri EditorMarker 0',
+    vertices = Triangle,
+    triangles = { { 0, 1, 2 } },
+    parent = root,
+  }
+  file.roots = { root }
+
+  return file:save()
+end
+
+local Plain, Textured, Defects = model(nil), model 'Tx_Bench_Model.tga', defects()
+
+--- The data folder's files by their paths under it: what the plugins' references lead to.
+local Files: { [string]: string | buffer } = {
+  ['textures/tx_bench_model.dds'] = '',
+}
+
+local Records: { tes3.Value } = {}
+
+local function add(record: tes3.Value) table.insert(Records, record) end
+
+--- Whether one in `every` of a kind's records, counted from `index`, is the odd one.
+local function odd(index: number, every: number): boolean return index % every == every - 1 end
+
+local Races =
+  { 'Argonian', 'Breton', 'Dark Elf', 'High Elf', 'Imperial', 'Khajiit', 'Nord', 'Orc', 'Redguard', 'Wood Elf' }
+
+local Parts =
+  { 'Ankle', 'Chest', 'Foot', 'Forearm', 'Groin', 'Hands.1st', 'Knee', 'Neck', 'Upper Arm', 'Wrist' }
+
+--- The lines of a script that names no file: the tokens a script is mostly made of.
+local ScriptBody = table.concat({
+  'short doOnce',
+  'float timer',
+  '',
+  'if ( MenuMode == 1 )',
+  '\treturn',
+  'endif',
+  '',
+  'if ( GetDistance Player < 256 )',
+  '\tset timer to ( timer + GetSecondsPassed )',
+  '\tif ( timer > 4 )',
+  '\t\tMessageBox "The door is barred from the other side."',
+  '\t\t"door_bench_01"->Lock 50',
+  '\t\tset doOnce to 1 ; only the first time',
+  '\tendif',
+  'endif',
+  '',
+  'if ( OnActivate == 1 )',
+  '\tif ( GetJournalIndex "BM_Bench" >= 20 )',
+  '\t\tActivate',
+  '\t\tPlaySound3D "Door Stone Open"',
+  '\telse',
+  '\t\tMessageBox "Nothing happens.", "Ok"',
+  '\tendif',
+  'endif',
+  '',
+}, '\r\n')
+
+--- A script of some forty lines, one in four of them naming a voice file, a track, or a video.
+local function script(index: number): string
+  local named = ''
+  if index % 12 == 3 then
+    named = `\tplayer->Say "Vo\\Misc\\Bench_{index % 24}.wav", "..." ; say "nothing.mp3"\r\n`
+  elseif index % 12 == 6 then
+    named = `\tStreamMusic "Special\\Bench_{index % 9}.mp3"\r\n`
+  elseif index % 12 == 9 then
+    named = `\tPlayBink "bench_{index % 7}.bik" 1\r\n`
+  end
+
+  return `Begin bench_script_{index}\r\n\r\n{ScriptBody}{named}{ScriptBody}\r\nEnd bench_script_{index}\r\n`
+end
+
+--- A response's result script. One response in three has one, which sets a journal entry, and
+--- one in fifteen of those offers a choice whose words hold the name of a function that takes a
+--- file; one response in sixty plays a track.
+local function resultScript(response: number): string
+  if response % 60 == 7 then return `StreamMusic "Explore\\Bench_{response % 4}.mp3"` end
+  if response % 3 ~= 1 then return '' end
+
+  local choice = if response % 45 == 4 then 'Choice "Say nothing." 1\r\n' else ''
+  return `Journal "BM_Bench" {response % 100}\r\nModDisposition 5\r\n{choice}Goodbye`
+end
+
+local Paragraph = 'It is said that the stones of the old road were laid before the first council sat, '
+  .. 'and that each one bears the mark of the mason who cut it. Travellers who look for the marks '
+  .. 'rarely find them, for the road has been mended many times since, and the menders left none.<BR>\r\n<BR>\r\n'
+
+--- A book's text: the markup every book opens with, a few paragraphs, and in one book in six an
+--- image.
+local function book(index: number): string
+  local image = ''
+  if index % 6 == 1 then
+    image = `<IMG SRC="Bench_Map_{index % 10}.tga" WIDTH="256" HEIGHT="128"><BR>\r\n`
+  elseif index % 6 == 4 then
+    image = `<IMG SRC="img://Textures\\Bench_Plate_{index % 5}.dds"><BR>\r\n`
+  end
+
+  -- One book in forty-eight has a tag that never closes, which OpenMW throws on.
+  local torn = if index % 48 == 47 then '<IMG SRC="torn.tga' else ''
+  return '<DIV ALIGN="CENTER"><FONT COLOR="000000" SIZE="3" FACE="Magic Cards"><BR>\r\n'
+    .. `The Old Road, Volume {index}<BR>\r\n<BR>\r\n<DIV ALIGN="LEFT">`
+    .. string.rep(Paragraph, 4)
+    .. image
+    .. string.rep(Paragraph, 2)
+    .. torn
+end
+
+--- A model record's path, which exists unless it is the odd one in sixteen.
+local function modelFile(directory: string, name: string, index: number, data: buffer?): string
+  if not odd(index, 16) then
+    Files[`meshes/{string.lower(directory)}/{string.lower(name)}.nif`] = data or Plain
+  end
+
+  return `{directory}\\{name}.NIF`
+end
+
+--- An icon's path: there as a `.dds`, as the `.tga` it is written as, or not at all.
+local function iconFile(directory: string, name: string, index: number): string
+  local lowered = `icons/{string.lower(directory)}/{string.lower(name)}`
+  if index % 8 < 5 then
+    Files[`{lowered}.dds`] = ''
+  elseif index % 8 < 7 then
+    Files[`{lowered}.tga`] = ''
+  end
+
+  return `{directory}\\{name}.tga`
+end
+
+local Items = { 'MiscItem', 'Weapon', 'Clothing', 'Armor', 'Alchemy', 'Ingredient' }
+
+local Effects = {
+  'WaterBreathing',
+  'SwiftSwim',
+  'WaterWalking',
+  'Shield',
+  'FireShield',
+  'LightningShield',
+  'FrostShield',
+  'Burden',
+}
+
+--- The records of the master: `scale` of them for each one in sixty-four of the mix.
+local function master(scale: number)
+  for index = 1, 22 * scale do
+    local name = `Bench_Static_{index}`
+    local written = modelFile('Bench', name, index)
+
+    -- A distant version of one static in eight, and a level of detail of one in sixteen.
+    if index % 8 == 2 then Files[`meshes/bench/{string.lower(name)}_dist.nif`] = Plain end
+    if index % 16 == 4 then Files[`meshes/bench/{string.lower(name)}_dist_1.nif`] = Plain end
+
+    -- One static in sixty-four names its model from the data folder down.
+    if index % 64 == 7 then written = `Meshes\\{written}` end
+
+    add { type = 'Static', id = `bench_static_{index}`, mesh = written }
+  end
+
+  for index = 1, 21 * scale do
+    local race, sex = Races[index % #Races + 1], if index % 2 == 0 then 'M' else 'F'
+    add {
+      type = 'Npc',
+      id = `bench npc {index}`,
+      mesh = modelFile('b', `B_N_{race}_{sex}_Skins`, index % 20),
+    }
+  end
+
+  for index = 1, 9 * scale do
+    local race, part = Races[index % #Races + 1], Parts[index % #Parts + 1]
+    add {
+      type = 'Bodypart',
+      id = `b_n_{race}_{part}_{index}`,
+      mesh = modelFile('b', `B_N_{race}_{part}_{index}`, index),
+    }
+  end
+
+  for index = 1, 7 * scale do
+    local shared = index % (2 * scale)
+    add {
+      type = 'Container',
+      id = `bench_chest_{index}`,
+      mesh = modelFile('o', `Contain_Bench_{shared}`, shared),
+    }
+  end
+
+  for index = 1, 6 * scale do
+    local shared = index % (3 * scale)
+    local name = `Act_Bench_{shared}`
+
+    -- One activator's model in three has an animation, and so is loaded from its `x` copy, which
+    -- one in twelve lacks.
+    if shared % 3 == 0 and not odd(shared, 16) then
+      Files[`meshes/a/x{string.lower(name)}.kf`] = Plain
+      if shared % 12 ~= 0 then Files[`meshes/a/x{string.lower(name)}.nif`] = Plain end
+    end
+
+    add { type = 'Activator', id = `bench_activator_{index}`, mesh = modelFile('a', name, shared) }
+  end
+
+  for index = 1, 5 * scale do
+    local shared = index % (2 * scale)
+    add {
+      type = 'Light',
+      id = `bench_light_{index}`,
+      mesh = modelFile('l', `Light_Bench_{shared}`, shared),
+      icon = iconFile('l', `Tx_Light_{shared}`, shared),
+    }
+  end
+
+  for index = 1, 5 * scale do
+    local shared = index % 12
+    add {
+      type = 'Book',
+      id = `bench_book_{index}`,
+      mesh = modelFile('m', `Text_Octavo_{shared}`, shared),
+      icon = iconFile('m', `Tx_Octavo_{shared}`, shared),
+      text = book(index),
+    }
+  end
+
+  for index = 1, 11 * scale do
+    local kind = Items[index % #Items + 1]
+    local shared = if kind == 'Alchemy' then index % 8 else index
+    add {
+      type = kind,
+      id = `bench_{kind}_{index}`,
+      mesh = modelFile(string.sub(kind, 1, 1), `{kind}_Bench_{shared}`, shared),
+      icon = iconFile(string.sub(kind, 1, 1), `Tx_{kind}_{shared}`, shared),
+    }
+  end
+
+  for index = 1, scale do
+    local name = `Creature_Bench_{index}`
+    if index % 2 == 0 and not odd(index, 16) then
+      Files[`meshes/r/x{string.lower(name)}.kf`] = Plain
+      Files[`meshes/r/x{string.lower(name)}.nif`] = Plain
+    end
+
+    add { type = 'Creature', id = `bench_creature_{index}`, mesh = modelFile('r', name, index) }
+    add { type = 'Door', id = `bench_door_{index}`, mesh = modelFile('d', `Door_Bench_{index}`, index) }
+  end
+
+  for index = 1, 3 * scale do
+    local name = `bench_{index}`
+    if index % 4 == 0 then
+      Files[`sound/fx/{name}.wav`] = ''
+    elseif index % 4 == 1 then
+      Files[`sound/fx/{name}.mp3`] = ''
+    end
+
+    add { type = 'Sound', id = `bench sound {index}`, soundPath = `Fx\\Bench_{index}.wav` }
+  end
+
+  for index = 1, scale do
+    local name = `tx_bench_land_{index}`
+    if not odd(index, 8) then Files[`textures/{name}.{if index % 3 == 0 then 'tga' else 'dds'}`] = '' end
+
+    add {
+      type = 'LandscapeTexture',
+      id = `bench_land_{index}`,
+      index = index,
+      fileName = `Tx_Bench_Land_{index}.tga`,
+    }
+  end
+
+  for index, effect in Effects do
+    local name = `tx_s_bench_{index}`
+    if index % 4 ~= 0 then Files[`icons/s/{name}.dds`] = '' end
+    if index % 2 == 0 then Files[`icons/s/b_{name}.dds`] = '' end
+
+    Files[`textures/vfx_bench_{index}.dds`] = ''
+    add {
+      type = 'MagicEffect',
+      effectId = effect,
+      icon = `s\\Tx_S_Bench_{index}.tga`,
+      texture = `VFX_Bench_{index}.tga`,
+      castVisual = `VFX_Bench_Cast_{index}`,
+      hitVisual = `VFX_Bench_Hit_{index}`,
+    }
+  end
+
+  for index = 1, 5 * scale do
+    if index % 12 == 3 and index % 24 < 12 then Files[`sound/vo/misc/bench_{index % 24}.wav`] = '' end
+    if index % 12 == 6 and index % 9 < 6 then Files[`music/special/bench_{index % 9}.mp3`] = '' end
+    if index % 12 == 9 and index % 7 < 5 then Files[`video/bench_{index % 7}.bik`] = '' end
+
+    add { type = 'Script', id = `bench_script_{index}`, text = script(index) }
+  end
+
+  for index = 0, 9 do
+    Files[`bookart/bench_map_{index}{if index % 3 == 0 then '_256_128' else ''}.dds`] = ''
+  end
+
+  Files['textures/bench_plate_1.dds'] = ''
+  Files['scripts/bench/player.lua'] = ''
+  add {
+    type = 'ScriptConfigList',
+    scripts = {
+      { path = 'Scripts\\Bench\\Player.lua', initData = '', flags = '', types = {}, records = {}, instances = {} },
+      { path = 'scripts/bench/gone.lua', initData = '', flags = '', types = {}, records = {}, instances = {} },
+    },
+  }
+
+  -- Records that name no file, which are most of what a plugin holds by type if not by count.
+  for index = 1, 20 * scale do
+    add { type = 'GlobalVariable', id = `bench_global_{index}`, value = { type = 'Float', data = index } }
+  end
+
+  -- Dialogue: twenty responses to a topic, one in twelve of them voiced.
+  local response = 0
+  for topic = 1, 9 * scale do
+    add { type = 'Dialogue', id = `bench topic {topic}` }
+    for _ = 1, 20 do
+      response += 1
+
+      local voiced = response % 12 == 5
+      if voiced and response % 24 == 5 then Files[`sound/vo/d/m/bench_{response % 96}.mp3`] = '' end
+
+      add {
+        type = 'DialogueInfo',
+        id = `{1000000 + response * 7919}`,
+        soundPath = if voiced then `Vo\\d\\m\\Bench_{response % 96}.mp3` else '',
+        scriptText = resultScript(response),
+      }
+    end
+  end
+
+  Files['music/explore/bench_2.mp3'] = ''
+end
+
+master(16)
+
+--- The patch: one record in sixteen of the master's that has an id, under the id in capitals and
+--- with another model or icon, and models of its own, each of which the NIF check reads.
+local Patch: { tes3.Value } = {}
+local PatchModels = 96
+for index, record in Records do
+  local named = type(record.id) == 'string' and record.type ~= 'Dialogue' and record.type ~= 'DialogueInfo'
+  if index % 16 ~= 0 or not named then continue end
+
+  local copy = table.clone(record :: { [string]: unknown })
+  copy.id = string.upper(record.id :: string)
+  if type(copy.mesh) == 'string' then copy.mesh = 'Bench\\Bench_Static_1.NIF' end
+
+  table.insert(Patch, copy)
+end
+
+for index = 1, PatchModels do
+  local name = `patch_{index}`
+  local kind = index % 4
+  Files[`meshes/patch/{name}.nif`] = if kind == 0 then Defects elseif kind == 1 then Plain else Textured
+  table.insert(Patch, {
+    type = if index % 3 == 0 then 'Creature' elseif index % 3 == 1 then 'Static' else 'MiscItem',
+    id = `bench_patch_{index}`,
+    mesh = `Patch\\Patch_{index}.nif`,
+  })
+end
+
+--- A plugin's bytes: a version 1.3 header and `records`.
+local function saved(records: { tes3.Value }): buffer
+  local built = tes3.new()
+  for _, record in records do
+    built:insertValue(built:count(), record)
+  end
+
+  built:updateRecordCount()
+  return built:save()
+end
+
+--- A plugin of `count` records made by `make`, opened.
+local function pluginOf(count: number, make: (index: number) -> tes3.Value): tes3.Plugin
+  local records = table.create(count) :: { tes3.Value }
+  for index = 1, count do
+    records[index] = make(index)
+  end
+
+  return tes3.open(saved(records))
+end
+
+--- The lines of a script list: one in eight a comment, one in thirty-two something OpenMW
+--- rejects.
+local function scriptList(count: number): string
+  local lines = table.create(count) :: { string }
+  for index = 1, count do
+    if index % 8 == 0 then
+      lines[index] = `# scripts of part {index}`
+    elseif index % 32 == 5 then
+      lines[index] = `PLAYER: scripts/bench/part_{index}.luau`
+    elseif index % 32 == 21 then
+      lines[index] = `scripts/bench/part_{index}.lua`
+    else
+      local flags = if index % 2 == 0 then 'PLAYER' else 'GLOBAL, MENU'
+      lines[index] = `{flags}:  Scripts\\Bench\\Part_{index % 512}.lua`
+    end
+  end
+
+  return table.concat(lines, '\r\n')
+end
+
+for index = 0, 511, 3 do
+  Files[`scripts/bench/part_{index}.lua`] = ''
+end
+
+--- A fresh folder `name` under the scratch root.
+local function folder(name: string): string
+  local root = jess.fs.join(scratch, name)
+  if jess.fs.exists(root) then assert(fs.remove(root, { recursive = true })) end
+
+  jess.fs.createDir(root)
+  return root
+end
+
+local MasterBytes, PatchBytes, ListText = saved(Records), saved(Patch), scriptList(2048)
+
+local DataRoot, PluginRoot = folder 'data', folder 'plugins'
+for path, data in Files do
+  jess.fs.write(jess.fs.join(DataRoot, path), data)
+end
+
+local MasterPath = jess.fs.join(PluginRoot, 'Bench.esm')
+local PatchPath = jess.fs.join(PluginRoot, 'Bench Patch.esp')
+local ListPath = jess.fs.join(PluginRoot, 'Bench.omwscripts')
+jess.fs.write(MasterPath, MasterBytes)
+jess.fs.write(PatchPath, PatchBytes)
+jess.fs.write(ListPath, ListText)
+
+local Data = vfs.VFS.fromDirectories { DataRoot }
+
+local LoadOrder: { pluginAssets.Input } = {
+  { name = 'Bench.esm', plugin = tes3.open(MasterBytes) },
+  { name = 'Bench Patch.esp', plugin = tes3.open(PatchBytes) },
+  { name = 'Bench.omwscripts', scripts = ListText },
+  { name = 'Gone.esp', problem = 'failed to read \'Gone.esp\': No such file or directory (os error 2)' },
+}
+
+local function check(
+  inputs: { pluginAssets.Input },
+  options: pluginAssets.Options
+): () -> pluginAssets.Report
+  return function(): pluginAssets.Report return pluginAssets.check(inputs, Data, options) end
+end
+
+workload(
+  'check a load order, lookups only',
+  2220154742867553,
+  check(LoadOrder, { meshes = false }),
+  reportWeight
+)
+
+workload(
+  'check a load order, findings only',
+  1334419082413294,
+  check(LoadOrder, { meshes = false, references = false }),
+  reportWeight
+)
+
+workload(
+  'check a load order as plugins on their own',
+  677802193703037,
+  check(LoadOrder, { meshes = false, winningOnly = false }),
+  reportWeight
+)
+
+workload(
+  'check a load order, shown down to broken',
+  275658585430727,
+  check(LoadOrder, { meshes = false, references = false, show = 'broken' }),
+  reportWeight
+)
+
+workload(
+  `check a patch and its {PatchModels} models`,
+  115173910162425,
+  check({ LoadOrder[2] }, {}),
+  reportWeight
+)
+
+workload(
+  `check a patch and its {PatchModels} models, shown down to broken`,
+  1565131035151450,
+  check({ LoadOrder[2] }, { show = 'broken' }),
+  reportWeight
+)
+
+--- Times a check, lookups only, of one plugin called `file` holding `count` records made by
+--- `make`.
+local function kind(
+  name: string,
+  expected: number,
+  file: string,
+  count: number,
+  make: (index: number) -> tes3.Value
+)
+  if not runs(name) then return end
+
+  local input = { name = file, plugin = pluginOf(count, make) }
+  workload(name, expected, check({ input }, { meshes = false }), reportWeight)
+end
+
+kind('check 2,048 statics', 2395982687347013, 'Statics.esp', 2048, function(index: number): tes3.Value
+  return { type = 'Static', id = `bench_static_{index}`, mesh = `Bench\\Bench_Static_{index}.NIF` }
+end)
+
+kind(
+  'check 2,048 NPCs of twenty models',
+  3944681710049785,
+  'Npcs.esp',
+  2048,
+  function(index: number): tes3.Value
+    local race, sex = Races[index % #Races + 1], if index % 2 == 0 then 'M' else 'F'
+    return { type = 'Npc', id = `bench npc {index}`, mesh = `b\\B_N_{race}_{sex}_Skins.NIF` }
+  end
+)
+
+kind('check 1,024 items', 532586997244827, 'Items.esp', 1024, function(index: number): tes3.Value
+  return {
+    type = 'MiscItem',
+    id = `bench_MiscItem_{index}`,
+    mesh = `M\\MiscItem_Bench_{index}.NIF`,
+    icon = `M\\Tx_MiscItem_{index}.tga`,
+  }
+end)
+
+kind('check 256 scripts', 4127739920525625, 'Scripts.esp', 256, function(index: number): tes3.Value
+  return { type = 'Script', id = `bench_script_{index}`, text = script(index) }
+end)
+
+kind('check 256 books', 3428493345963562, 'Books.esp', 256, function(index: number): tes3.Value
+  return { type = 'Book', id = `bench_book_{index}`, text = book(index) }
+end)
+
+kind(
+  'check 4,096 responses',
+  3557099854435472,
+  'Responses.esp',
+  4096,
+  function(index: number): tes3.Value
+    if index % 32 == 1 then return { type = 'Dialogue', id = `bench topic {index}` } end
+
+    return {
+      type = 'DialogueInfo',
+      id = `{1000000 + index * 7919}`,
+      soundPath = if index % 12 == 5 then `Vo\\d\\m\\Bench_{index % 96}.mp3` else '',
+      scriptText = resultScript(index),
+    }
+  end
+)
+
+workload(
+  'check a script list of 2,048 lines',
+  863382262855658,
+  check({ LoadOrder[3] }, { meshes = false }),
+  reportWeight
+)
+
+local function resultWeight(result: commands.CheckResult): number
+  local lines = {}
+  for _, plugin in result.plugins do
+    table.insert(lines, `{plugin.name} {plugin.path} {plugin.problem}`)
+  end
+
+  return textWeight(`{table.concat(lines, '\n')}\n{table.concat(result.sources, '\n')}`)
+    + reportWeight(result.report) % 2 ^ 32
+end
+
+local Request: commands.CheckRequest = {
+  plugins = { MasterPath, PatchPath, ListPath },
+  data = { DataRoot },
+  meshes = false,
+  references = false,
+  show = 'collision',
+}
+
+workload(
+  'the command over three plugins by path, as the command line asks',
+  1358486647833621,
+  function(): commands.CheckResult return commands.check(Request) end,
+  resultWeight
+)
+
+local ArgumentLists: { { string } } = {
+  { 'Bench.esm' },
+  { '--show', 'files', '--data', 'Data Files', 'Bench.esm', 'Bench Patch.esp' },
+  { '-v', '--no-meshes', '--format=json', '--', '-odd.esp' },
+  { '--data=a', '--data', 'b', '--data', 'c', '--encoding', 'win1251', 'Bench.esm', 'Other.esp' },
+  { '--show=wont-load', '--format', 'toml', 'Bench.esm' },
+  { '--help' },
+  { '--frobnicate', 'Bench.esm' },
+  { '--show', 'everything', 'Bench.esm' },
+}
+
+workload(
+  `parse {#ArgumentLists} argument lists`,
+  252,
+  function(): number
+    local total = 0
+    for _, argv in ArgumentLists do
+      local parsed, message = cli.parse(argv)
+      local request = parsed and parsed.request
+      total += if request then #request.plugins + 16 elseif parsed then 16 else #(message :: string)
+    end
+
+    return total
+  end,
+  function(total: number): number return total end
+)
+
+--- The result of `request`, checked when it is first asked for: before a workload's first batch,
+--- so outside its time, and not at all when no workload that lays it out runs.
+local function once(request: commands.CheckRequest): () -> commands.CheckResult
+  local made: commands.CheckResult?
+  return function(): commands.CheckResult
+    local result = made or commands.check(request)
+    made = result
+    return result
+  end
+end
+
+local everything = once { plugins = { PatchPath }, data = { DataRoot }, verbose = true }
+
+local shown = once {
+  plugins = { MasterPath, PatchPath, ListPath },
+  data = { DataRoot },
+  references = false,
+  show = 'collision',
+}
+
+--- Times `result` laid out in each format, each document weighing what `expected` says for it.
+local function documents(
+  name: string,
+  result: () -> commands.CheckResult,
+  verbose: boolean,
+  expected: { [cli.Format]: number }
+)
+  for _, format in { 'yaml', 'json', 'toml' } :: { cli.Format } do
+    workload(
+      `render {name} as {format}`,
+      expected[format],
+      function(): string return cli.render(result(), { format = format, verbose = verbose }) end,
+      textWeight
+    )
+  end
+end
+
+documents(
+  'a report',
+  shown,
+  false,
+  { yaml = 1731593143434563, json = 3223006492363803, toml = 376502664706256 }
+)
+
+documents(
+  'a patch, its models, references, and files used',
+  everything,
+  true,
+  { yaml = 3436255878688465, json = 1829645772237897, toml = 770160986276716 }
+)
+
+workload(
+  'render the files a patch uses as yaml',
+  2703478246877840,
+  function(): string return cli.render(everything(), { files = true }) end,
+  textWeight
+)
+
+workload(
+  'say what is missing beside the file list',
+  843458829979767,
+  function(): string return cli.diagnostics(shown(), { files = true }) end,
+  textWeight
+)
+
+--- Times the command line run once on `argv`, a process a sample. What it prints must weigh
+--- `expected`, and it must exit with `status`.
+local function cold(name: string, expected: number, status: number, argv: { string })
+  if not binary or not runs(name) then return end
+
+  local arguments = {
+    'run',
+    '--capability',
+    'filesystem.read',
+    '--package',
+    `{Here}/..`,
+    '--package-path',
+    PackagePath,
+    -- The arguments after the script are the command's, flags and all, not jess's.
+    '--',
+    `{Here}/cold.luau`,
+  }
+
+  for _, argument in argv do
+    table.insert(arguments, argument)
+  end
+
+  local samples = {}
+  for run = 1, 7 do
+    local result, message = process.run(binary, arguments, { stdout = 'capture', stderr = 'null' })
+    if not result then error(`{name}: {message}`, 0) end
+
+    local printed = result.stdout or ''
+    local document, code, seconds = string.match(printed, '^(.*)\n(%d+)\t([%d.]+)\n$')
+    local weight = if document then textWeight(document) else -1
+    if tonumber(code) ~= status or weight ~= expected then
+      error(`{name}: exited {code} having printed {weight}, not {status} and {expected}`, 0)
+    end
+
+    samples[run] = tonumber(seconds) :: number
+  end
+
+  print(`{name}\t{string.format('%.9f', median(samples))}`)
+end
+
+cold('cold: help', 2850473510963166, 0, { '--help' })
+cold(
+  'cold: check of a patch, lookups only',
+  511922135892444,
+  1,
+  { '--no-meshes', '--data', DataRoot, PatchPath }
+)
+cold(
+  'cold: check of a patch and its models',
+  4491543915283584,
+  1,
+  { '--data', DataRoot, PatchPath }
+)
+cold(
+  'cold: check of three plugins, lookups only',
+  264797705028408,
+  1,
+  { '--no-meshes', '--data', DataRoot, MasterPath, PatchPath, ListPath }
+)
+
+assert(fs.remove(DataRoot, { recursive = true }))
+assert(fs.remove(PluginRoot, { recursive = true }))
