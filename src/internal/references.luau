@@ -10,6 +10,7 @@ and sound fields by record type; the voice, music, and video files MWScript name
 reads them; the Lua scripts a `LUAL` record or an `.omwscripts` file lists.
 ]]
 
+local bytes = require '@dream/bytes'
 local tes3 = require '@tes3'
 
 --- What a record field names, which decides how OpenMW looks it up: a model under `meshes`,
@@ -143,6 +144,11 @@ local Paged: { [string]: boolean } = { STAT = true, ACTI = true, DOOR = true, CO
 --- The script functions whose first argument is a file, by name in lowercase.
 local ScriptFiles: { [string]: Kind } = { say = 'voice', streammusic = 'music', playbink = 'video' }
 
+--- Any of those names, in either case of each ASCII letter, as bytes: record text is in a code
+--- page that spells ASCII as ASCII, so text without a match, decoded or not, calls none of them.
+local FileFunction =
+  bytes.regex('say|streammusic|playbink', { caseInsensitive = true, unicode = false })
+
 --- `getDistantMeshPattern`: the suffix of distant models, by the bits of a content file's
 --- version as a 32-bit float (1.2 and 1.3, 0.8 and 1.0, 0.94 and 1.7).
 local DistantSuffixes: { [number]: string } = {
@@ -200,6 +206,8 @@ end
 
 local Comma, Open, Close, Semicolon, Quote = string.byte ',', string.byte '(', string.byte ')', string.byte ';', string.byte '"'
 
+local Return = string.byte '\r'
+
 --- A script line's tokens: quoted strings without their quotes, and words split at spaces,
 --- commas, parentheses, and `->`, up to a `;` comment.
 local function scriptTokens(line: string): { string }
@@ -255,16 +263,29 @@ end
 --- `PlayBink` videos, in script order.
 local function scriptFiles(text: string): { { kind: Kind, path: string } }
   local files = {}
-  for _, line in string.split(text, '\n') do
-    -- A line ends at its line feed, and a carriage return before that isn't part of it.
-    if string.sub(line, -1) == '\r' then line = string.sub(line, 1, -2) end
+  local length, offset = #text, 0
+  while offset < length do
+    -- A file is named after one of the functions, so only the lines that spell one are read.
+    local spelled = FileFunction:find(text, offset)
+    if not spelled then break end
 
-    local tokens = scriptTokens(line)
+    local before = bytes.rfind(text, '\n', spelled)
+    local feed = string.find(text, '\n', spelled + 1, true)
+    local first, last = if before then before + 2 else 1, if feed then feed - 1 else length
+
+    -- A line ends at its line feed, and a carriage return before that isn't part of it.
+    if string.byte(text, last) == Return then last -= 1 end
+
+    local tokens = scriptTokens(string.sub(text, first, last))
     for index, token in tokens do
       local kind = ScriptFiles[string.lower(token)]
       local file = tokens[index + 1]
       if kind and file and file ~= '' then table.insert(files, { kind = kind, path = file }) end
     end
+
+    if not feed then break end
+
+    offset = feed
   end
 
   return files
