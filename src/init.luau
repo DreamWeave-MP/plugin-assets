@@ -177,7 +177,7 @@ local DetailLevels: { string } = table.freeze([for level in range(0, 15) => `_{l
 --- `correctMeshPath`, and `correctActorModelPath` for classes OpenMW animates.
 local function resolveModel(reference: Reference, exists: (string) -> boolean, resolution: Resolution)
   local written = reference.path
-  local models, findings = resolution.models, resolution.findings
+  local {models, findings} = resolution
 
   -- Bethesda's placeholder for items that never appear in the world.
   if string.lower(references.trim(written)) == 'add world art' then
@@ -250,7 +250,7 @@ type Lookup = { resolved: paths.Resolved, code: string, what: string }
 --- Where an icon, texture, sound, or book image is searched for, with the code and the word a
 --- missing one is reported by.
 local function lookUp(reference: Reference, exists: (string) -> boolean): Lookup
-  local written, kind = reference.path, reference.kind
+  local {path: written, kind} = reference
   if kind == 'icon' or kind == 'effectIcon' then
     return { resolved = paths.iconPath(written, exists), code = 'missingIcon', what = 'icon' }
   end
@@ -349,12 +349,7 @@ local function resolve(reference: Reference, exists: (string) -> boolean): Resol
     end
   end
 
-  local models = {}
-  for _, model in resolution.models do
-    if nifAssets.isNifPath(model) then table.insert(models, model) end
-  end
-
-  resolution.models = models
+  resolution.models = [for model in resolution.models if nifAssets.isNifPath(model) => model]
   return resolution
 end
 
@@ -397,20 +392,21 @@ local function collect(inputs: { Input }, winningOnly: boolean): (references.Fou
     return not winningOnly or id == '' or winners[key(recordType, id)] == index
   end
 
-  local merged: references.Found = { references = {}, problems = {}, effectVisuals = {} }
-  for index, found in collected do
-    for _, reference in found.references do
-      if wins(index, reference.recordType, reference.id) then
-        table.insert(merged.references, reference)
-      end
-    end
-
-    for _, problem in found.problems do
-      if wins(index, problem.recordType, problem.id) then table.insert(merged.problems, problem) end
-    end
-
-    table.move(found.effectVisuals, 1, #found.effectVisuals, #merged.effectVisuals + 1, merged.effectVisuals)
-  end
+  local merged: references.Found = {
+    references = [
+      for index, found in enumerate(collected)
+      for reference in found.references
+      if wins(index, reference.recordType, reference.id)
+      => reference
+    ],
+    problems = [
+      for index, found in enumerate(collected)
+      for problem in found.problems
+      if wins(index, problem.recordType, problem.id)
+      => problem
+    ],
+    effectVisuals = [for found in collected for visual in found.effectVisuals => visual],
+  }
 
   return merged, unreadable
 end
@@ -460,12 +456,11 @@ local function checkMeshes(
     end
 
     if neverCollides then
-      local kept = {}
-      for _, finding in file.findings do
-        if finding.severity ~= 'collision' and finding.code ~= 'renderGeometryCollision' then
-          table.insert(kept, finding)
-        end
-      end
+      local kept = [
+        for finding in file.findings
+        if finding.severity ~= 'collision' and finding.code ~= 'renderGeometryCollision'
+        => finding
+      ]
 
       file.findings = kept
       file.worst = if kept[1] then kept[1].severity else nil
@@ -544,18 +539,12 @@ end
 --- left without any, unless `everyModel`. References, used files, and the summary stay whole.
 local function shown(report: Report, show: Severity, everyModel: boolean): Report
   local limit = SeverityRank[show]
-  local findings = {}
-  for _, finding in report.findings do
-    if SeverityRank[finding.severity] <= limit then table.insert(findings, finding) end
-  end
+  local findings = [for finding in report.findings if SeverityRank[finding.severity] <= limit => finding]
 
   local meshes: { MeshReport } = {}
   for _, mesh in report.meshes do
-    local kept = {}
-    for _, finding in mesh.findings do
-      -- A severity the NIF check has and this doesn't know is always shown.
-      if (SeverityRank[finding.severity] or 0) <= limit then table.insert(kept, finding) end
-    end
+    -- A severity the NIF check has and this doesn't know is always shown.
+    local kept = [for finding in mesh.findings if (SeverityRank[finding.severity] or 0) <= limit => finding]
 
     if not everyModel and #kept == 0 then continue end
 
