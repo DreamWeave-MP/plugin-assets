@@ -983,6 +983,49 @@ suite.describe('a load order', function()
       { file = model, path = 'meshes/x/rock.nif', inArchive = false },
     }
   end)
+
+  suite.it('lists the files used folder by folder, not as their paths sort byte by byte', function()
+    local files = {
+      -- As the paths' bytes sort, which is not the order they are listed in: a space, `!`, `-`,
+      -- and `.` all come before the separator.
+      'bookart!/a.dds',
+      'bookart/Z.dds',
+      'bookart/a b.dds',
+      'bookart/a-b/c.dds',
+      'bookart/a.dds',
+      'bookart/a/b c.dds',
+      'bookart/a/b.dds',
+    }
+
+    local onDisk: { [string]: string | buffer } = {}
+    local images = {}
+    for _, file in files do
+      onDisk[file] = ''
+      table.insert(images, `<IMG SRC="img://{file}">`)
+    end
+
+    local root, lookup = data('used-order', onDisk)
+    local book = { type = 'Book', id = 'jess_atlas', text = table.concat(images) }
+    local report = pluginAssets.check({ { name = 'Test.esp', plugin = plugin { book } } }, lookup)
+    local used = {}
+    for _, file in report.usedFiles do
+      table.insert(used, `{file.file} = {file.path}`)
+    end
+
+    local function there(file: string): string
+      return `{jess.fs.join(root, file)} = {string.lower(file)}`
+    end
+
+    expect(used).toEqual {
+      there 'bookart/Z.dds',
+      there 'bookart/a/b c.dds',
+      there 'bookart/a/b.dds',
+      there 'bookart/a b.dds',
+      there 'bookart/a-b/c.dds',
+      there 'bookart/a.dds',
+      there 'bookart!/a.dds',
+    }
+  end)
 end)
 
 suite.describe('models', function()
