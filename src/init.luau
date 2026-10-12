@@ -157,6 +157,19 @@ type Found = { severity: Severity, code: string, message: string }
 --- and what is wrong with it.
 type Resolution = { resolved: string?, models: { string }, findings: { Found } }
 
+--- Where a reference led, kept for the next one that names the same file the same way: what the
+--- summary counts the file by (its kind and normalized path), the loose file or archive what it
+--- resolved to comes from, when the report lists references, and what the lookup read of the
+--- reference beside its kind and path.
+type Lead = {
+  resolution: Resolution,
+  file: string,
+  source: string?,
+  distant: string?,
+  width: number?,
+  height: number?,
+}
+
 --- `correctMeshPath`, and `correctActorModelPath` for classes OpenMW animates.
 local function resolveModel(reference: Reference, exists: (string) -> boolean, resolution: Resolution)
   local written = reference.path
@@ -624,17 +637,40 @@ local function check(inputs: { Input }, lookup: vfs.VFS, options: Options?): Rep
   local sources = nifAssets.new(lookup)
   local files: { [string]: boolean }, missing: { [string]: boolean } = {}, {}
   local users: { [string]: { string } }, models: { string } = {}, {}
-  local used: { [string]: boolean } = {}
+  local used: { [string]: boolean }, leads: { [string]: { [string]: Lead } } = {}, {}
   for _, reference in found.references do
-    local resolution = resolve(reference, exists)
-    local file = `{reference.kind}\0{nifAssets.normalize(reference.path)}`
+    local {plugin, recordType, id, kind, path, distant, width, height} = reference
+    local byPath = leads[kind]
+    if not byPath then
+      byPath = {}
+      leads[kind] = byPath
+    end
+
+    -- A load order names most of its files more than once, and a lookup that reads the same of
+    -- a reference finds the same.
+    local lead = byPath[path]
+    if not lead or lead.distant ~= distant or lead.width ~= width or lead.height ~= height then
+      local fresh = resolve(reference, exists)
+      local resolved = fresh.resolved
+      lead = {
+        resolution = fresh,
+        file = `{kind}\0{nifAssets.normalize(path)}`,
+        source = if resolved and keepReferences then nifAssets.sourceOf(sources, resolved) else nil,
+        distant = distant,
+        width = width,
+        height = height,
+      }
+      byPath[path] = lead
+    end
+
+    local {resolution, file} = lead
     if not files[file] then
       files[file] = true
       summary.files += 1
     end
 
     -- `TYPE id` of each record using each model, in reference order without repeats.
-    local user = `{reference.recordType} {reference.id}`
+    local user = if resolution.models[1] then `{recordType} {id}` else ''
     for _, model in resolution.models do
       local modelUsers = users[model]
       if not modelUsers then
@@ -656,10 +692,10 @@ local function check(inputs: { Input }, lookup: vfs.VFS, options: Options?): Rep
         severity = finding.severity,
         code = finding.code,
         message = finding.message,
-        plugin = reference.plugin,
-        recordType = reference.recordType,
-        id = reference.id,
-        path = reference.path,
+        plugin = plugin,
+        recordType = recordType,
+        id = id,
+        path = path,
       })
     end
 
@@ -669,13 +705,13 @@ local function check(inputs: { Input }, lookup: vfs.VFS, options: Options?): Rep
     if resolved then used[resolved] = true end
 
     table.insert(report.references, {
-      plugin = reference.plugin,
-      recordType = reference.recordType,
-      id = reference.id,
-      kind = reference.kind,
-      path = reference.path,
+      plugin = plugin,
+      recordType = recordType,
+      id = id,
+      kind = kind,
+      path = path,
       resolved = resolved,
-      source = if resolved then nifAssets.sourceOf(sources, resolved) else nil,
+      source = lead.source,
     })
   end
 
