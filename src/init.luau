@@ -170,6 +170,10 @@ type Lead = {
   height: number?,
 }
 
+--- What follows a distant model's name for each level of detail it can have: `_0.nif` to
+--- `_15.nif`.
+local DetailLevels: { string } = table.freeze([for level in range(0, 15) => `_{level}.nif`])
+
 --- `correctMeshPath`, and `correctActorModelPath` for classes OpenMW animates.
 local function resolveModel(reference: Reference, exists: (string) -> boolean, resolution: Resolution)
   local written = reference.path
@@ -209,13 +213,13 @@ local function resolveModel(reference: Reference, exists: (string) -> boolean, r
   -- the distance when they exist.
   local suffix = reference.distant
   if suffix and found and string.sub(mesh, -4) == '.nif' then
-    local stem = string.sub(mesh, 1, -5)
-    for lod = 0, 15 do
-      local variant = `{stem}{suffix}_{lod}.nif`
+    local distant = string.sub(mesh, 1, -5) .. suffix
+    for _, level in DetailLevels do
+      local variant = distant .. level
       if exists(variant) then table.insert(models, variant) end
     end
 
-    local plain = `{stem}{suffix}.nif`
+    local plain = distant .. '.nif'
     if exists(plain) then table.insert(models, plain) end
   end
 
