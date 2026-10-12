@@ -585,15 +585,56 @@ local function saved(records: { tes3.Value }): buffer
   return built:save()
 end
 
---- A plugin of `count` records made by `make`, opened.
-local function pluginOf(count: number, make: (index: number) -> tes3.Value): tes3.Plugin
+--- `count` records made by `make`.
+local function recordsOf(count: number, make: (index: number) -> tes3.Value): { tes3.Value }
   local records = table.create(count) :: { tes3.Value }
   for index = 1, count do
     records[index] = make(index)
   end
 
-  return tes3.open(saved(records))
+  return records
 end
+
+--- The records of the plugins that hold one kind each. Their files are in the data folder as the
+--- master's are: every model but one in sixteen, a distant version of one static in eight, and
+--- seven icons in eight.
+local Kinds = {
+  statics = recordsOf(2048, function(index: number): tes3.Value
+    local name = `Static_{index}`
+    if index % 8 == 2 then Files[`meshes/kind/{string.lower(name)}_dist.nif`] = Plain end
+    if index % 16 == 4 then Files[`meshes/kind/{string.lower(name)}_dist_1.nif`] = Plain end
+
+    return { type = 'Static', id = `kind_static_{index}`, mesh = modelFile('Kind', name, index) }
+  end),
+  npcs = recordsOf(2048, function(index: number): tes3.Value
+    local race, sex = Races[index % #Races + 1], if index % 2 == 0 then 'M' else 'F'
+    return { type = 'Npc', id = `bench npc {index}`, mesh = `b\\B_N_{race}_{sex}_Skins.NIF` }
+  end),
+  items = recordsOf(1024, function(index: number): tes3.Value
+    return {
+      type = 'MiscItem',
+      id = `kind_item_{index}`,
+      mesh = modelFile('Kind', `Item_{index}`, index),
+      icon = iconFile('Kind', `Tx_Item_{index}`, index),
+    }
+  end),
+  scripts = recordsOf(256, function(index: number): tes3.Value
+    return { type = 'Script', id = `bench_script_{index}`, text = script(index) }
+  end),
+  books = recordsOf(256, function(index: number): tes3.Value
+    return { type = 'Book', id = `bench_book_{index}`, text = book(index) }
+  end),
+  responses = recordsOf(4096, function(index: number): tes3.Value
+    if index % 32 == 1 then return { type = 'Dialogue', id = `bench topic {index}` } end
+
+    return {
+      type = 'DialogueInfo',
+      id = `{1000000 + index * 7919}`,
+      soundPath = if index % 12 == 5 then `Vo\\d\\m\\Bench_{index % 96}.mp3` else '',
+      scriptText = resultScript(index),
+    }
+  end),
+}
 
 --- The lines of a script list: one in eight a comment, one in thirty-two something OpenMW
 --- rejects.
@@ -700,69 +741,20 @@ workload(
   reportWeight
 )
 
---- Times a check, lookups only, of one plugin called `file` holding `count` records made by
---- `make`.
-local function kind(
-  name: string,
-  expected: number,
-  file: string,
-  count: number,
-  make: (index: number) -> tes3.Value
-)
+--- Times a check, lookups only, of one plugin called `file` holding `records`.
+local function kind(name: string, expected: number, file: string, records: { tes3.Value })
   if not runs(name) then return end
 
-  local input = { name = file, plugin = pluginOf(count, make) }
+  local input = { name = file, plugin = tes3.open(saved(records)) }
   workload(name, expected, check({ input }, { meshes = false }), reportWeight)
 end
 
-kind('check 2,048 statics', 2395982687347013, 'Statics.esp', 2048, function(index: number): tes3.Value
-  return { type = 'Static', id = `bench_static_{index}`, mesh = `Bench\\Bench_Static_{index}.NIF` }
-end)
-
-kind(
-  'check 2,048 NPCs of twenty models',
-  3944681710049785,
-  'Npcs.esp',
-  2048,
-  function(index: number): tes3.Value
-    local race, sex = Races[index % #Races + 1], if index % 2 == 0 then 'M' else 'F'
-    return { type = 'Npc', id = `bench npc {index}`, mesh = `b\\B_N_{race}_{sex}_Skins.NIF` }
-  end
-)
-
-kind('check 1,024 items', 532586997244827, 'Items.esp', 1024, function(index: number): tes3.Value
-  return {
-    type = 'MiscItem',
-    id = `bench_MiscItem_{index}`,
-    mesh = `M\\MiscItem_Bench_{index}.NIF`,
-    icon = `M\\Tx_MiscItem_{index}.tga`,
-  }
-end)
-
-kind('check 256 scripts', 4127739920525625, 'Scripts.esp', 256, function(index: number): tes3.Value
-  return { type = 'Script', id = `bench_script_{index}`, text = script(index) }
-end)
-
-kind('check 256 books', 3428493345963562, 'Books.esp', 256, function(index: number): tes3.Value
-  return { type = 'Book', id = `bench_book_{index}`, text = book(index) }
-end)
-
-kind(
-  'check 4,096 responses',
-  3557099854435472,
-  'Responses.esp',
-  4096,
-  function(index: number): tes3.Value
-    if index % 32 == 1 then return { type = 'Dialogue', id = `bench topic {index}` } end
-
-    return {
-      type = 'DialogueInfo',
-      id = `{1000000 + index * 7919}`,
-      soundPath = if index % 12 == 5 then `Vo\\d\\m\\Bench_{index % 96}.mp3` else '',
-      scriptText = resultScript(index),
-    }
-  end
-)
+kind('check 2,048 statics', 1997421011163547, 'Statics.esp', Kinds.statics)
+kind('check 2,048 NPCs of twenty models', 3944681710049785, 'Npcs.esp', Kinds.npcs)
+kind('check 1,024 items', 3531704110527162, 'Items.esp', Kinds.items)
+kind('check 256 scripts', 4127739920525625, 'Scripts.esp', Kinds.scripts)
+kind('check 256 books', 3428493345963562, 'Books.esp', Kinds.books)
+kind('check 4,096 responses', 3557099854435472, 'Responses.esp', Kinds.responses)
 
 workload(
   'check a script list of 2,048 lines',
