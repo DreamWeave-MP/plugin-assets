@@ -1167,6 +1167,43 @@ suite.describe('models', function()
     expect(distant.meshes[2].usedBy).toEqual { 'STAT tower', 'ACTI gate' }
     expect(distant.meshes[1].usedBy).toEqual { 'STAT tower', 'ACTI gate', 'MISC toy' }
   end)
+
+  suite.it('are looked up for each record by what it is, though another names the same file', function()
+    -- The same model by the same path: paged for the statics, and not for the items between.
+    local report = check('same-path', {
+      { type = 'MiscItem', id = 'toy', mesh = 'tower.nif' },
+      static('tower', 'tower.nif'),
+      { type = 'MiscItem', id = 'copy', mesh = 'tower.nif' },
+      static('spire', 'tower.nif'),
+    }, { ['meshes/tower.nif'] = shape(), ['meshes/tower_dist.nif'] = shape() })
+
+    expect(meshPaths(report)).toEqual { 'meshes/tower.nif', 'meshes/tower_dist.nif' }
+    expect(report.meshes[1].usedBy).toEqual { 'MISC toy', 'STAT tower', 'MISC copy', 'STAT spire' }
+    expect(report.meshes[2].usedBy).toEqual { 'STAT tower', 'STAT spire' }
+    expect(report.summary.files).toBe(1)
+
+    -- The same image by the same path, at sizes that lead to different files.
+    local text = '<IMG SRC="plate.tga" WIDTH="64" HEIGHT="32"><IMG SRC="plate.tga" WIDTH="8" HEIGHT="8">'
+      .. '<IMG SRC="plate.tga" WIDTH="64" HEIGHT="32"><IMG SRC="plate.tga" WIDTH="64" HEIGHT="8">'
+    local sized = check('same-image', { { type = 'Book', id = 'jess_plates', text = text } }, {
+      ['bookart/plate_64_32.dds'] = '',
+    })
+
+    expect(led(sized)).toEqual {
+      'bookArt plate.tga -> bookart/plate_64_32.dds',
+      'bookArt plate.tga -> nothing',
+      'bookArt plate.tga -> bookart/plate_64_32.dds',
+      'bookArt plate.tga -> nothing',
+    }
+
+    expect(said(sized)).toEqual {
+      'missingBookArt BOOK jess_plates: book image "plate.tga" not found (tried bookart/plate.dds, bookart/plate.tga, bookart/plate_8_8.dds)',
+      'missingBookArt BOOK jess_plates: book image "plate.tga" not found (tried bookart/plate.dds, bookart/plate.tga, bookart/plate_64_8.dds)',
+    }
+
+    expect(sized.summary.files).toBe(1)
+    expect(sized.summary.missing).toBe(1)
+  end)
 end)
 
 suite.describe('options', function()
