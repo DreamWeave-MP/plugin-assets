@@ -21,6 +21,7 @@ The models are read through the VFS, and `usedFiles` says where each file is on 
 needs the `filesystem.read` capability.
 ]]
 
+local bytes = require '@dream/bytes'
 local fs = require '@dream/fs'
 local nifAssets = require '@nif-assets'
 local paths = require '@self/internal/paths'
@@ -481,41 +482,49 @@ local function checkMeshes(
   end
 end
 
---- Whether `left` sorts before `right` as paths do: component by component, so a folder's files
---- come before those of a folder whose name only starts the same.
-local function pathBefore(left: string, right: string): boolean
-  local leftParts, rightParts = string.split(left, '/'), string.split(right, '/')
-  for position, part in leftParts do
-    local other = rightParts[position]
-    if not other then return false end
-    if part ~= other then return part < other end
-  end
-
-  return #leftParts < #rightParts
-end
-
---- Every file the references, models, and model textures resolve to, and where it is.
+--- Every file the references, models, and model textures resolve to, and where it is: sorted by
+--- where, as paths sort, component by component, so that a folder's files come before those of a
+--- folder whose name only starts the same; then by VFS path.
 local function usedFiles(used: { [string]: boolean }, lookup: vfs.VFS): { UsedFile }
-  local canonical: { [string]: string } = {}
-  local files: { UsedFile } = {}
+  -- A place on disk goes by its path with the separators made NUL, the least byte and one no
+  -- path holds: those keys sort as bytes into the order the paths have by their components.
+  local keys: { [string]: string }, places: { [string]: string } = {}, {}
+  local pathsAt: { [string]: { string } }, order: { string } = {}, {}
+  local archived: { [string]: boolean } = {}
   for path in used do
     local file = lookup:getFile(path)
     if not file then continue end
 
     local archive = file:parentArchivePath()
     local onDisk = archive or file:path()
-    if not canonical[onDisk] then canonical[onDisk] = fs.canonicalize(onDisk) or onDisk end
+    local key = keys[onDisk]
+    if not key then
+      local place = fs.canonicalize(onDisk) or onDisk
+      key = bytes.translate(place, '/', '\0')
+      keys[onDisk] = key
 
-    table.insert(files, { file = canonical[onDisk], path = path, inArchive = archive ~= nil })
+      -- Two paths can be one place, by a link.
+      if not pathsAt[key] then
+        places[key] = place
+        pathsAt[key] = {}
+        table.insert(order, key)
+      end
+    end
+
+    archived[path] = archive ~= nil
+    table.insert(pathsAt[key], path)
   end
 
-  table.sort(files, function(left: UsedFile, right: UsedFile): boolean
-    if left.file ~= right.file then return pathBefore(left.file, right.file) end
-    if left.path ~= right.path then return left.path < right.path end
+  table.sort(order)
+  for _, paths in pathsAt do
+    table.sort(paths)
+  end
 
-    return not left.inArchive and right.inArchive
-  end)
-  return files
+  return [
+    for key in order
+    for path in pathsAt[key]
+    => { file = places[key], path = path, inArchive = archived[path] }
+  ]
 end
 
 --- The report with findings, and models' findings, less severe than `show` left out, and models
