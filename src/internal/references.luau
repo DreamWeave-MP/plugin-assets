@@ -411,6 +411,29 @@ local function recordId(plugin: tes3.Plugin, index: number, tag: string, value: 
   return tes3.records.fieldId(plugin, index) or tes3.records.id(plugin, index) or ''
 end
 
+local SoundFile, ResultScript = tes3.tags.code 'SNAM', tes3.tags.code 'BNAM'
+
+--- Whether any of record `index`'s bytes spell a function that takes a file.
+local function spellsFileFunction(plugin: tes3.Plugin, index: number): boolean
+  local source, start, finish = plugin:span(index)
+  return FileFunction:isMatch(source, start, finish - start)
+end
+
+--- Record `index` decoded, or nil, undecoded, when its bytes show it can name no file: a script
+--- that spells none of the functions that take one, and a response (INFO) with no sound file
+--- that has no result script or spells none of them either. Those are most of a master's
+--- records, and decoding them most of what reading it costs.
+local function read(plugin: tes3.Plugin, index: number, tag: string): tes3.Value?
+  if tag == 'SCPT' and not spellsFileFunction(plugin, index) then return nil end
+
+  if tag == 'INFO' and not plugin:findSubrecord(index, SoundFile) then
+    local result = spellsFileFunction(plugin, index) and plugin:findSubrecord(index, ResultScript)
+    if not result then return nil end
+  end
+
+  return plugin:decode(index)
+end
+
 --- Every file `plugin`'s records refer to, in record order, with the plugin named `name`.
 local function ofPlugin(plugin: tes3.Plugin, name: string): Found
   local found: Found = { references = {}, problems = {}, effectVisuals = {} }
@@ -424,7 +447,7 @@ local function ofPlugin(plugin: tes3.Plugin, name: string): Found
 
     -- `plugin:decode` throws on bytes that don't read as the record's type. Such a record names
     -- no file anyone can tell, and the records after it are still read.
-    local decoded, value = pcall(plugin.decode, plugin, index)
+    local decoded, value = pcall(read, plugin, index, tag)
     if not decoded or not value then continue end
 
     if tag == 'DIAL' then
