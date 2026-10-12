@@ -22,6 +22,7 @@ needs the `filesystem.read` capability.
 ]]
 
 local bytes = require '@dream/bytes'
+local data = require '@dream/data'
 local fs = require '@dream/fs'
 local nifAssets = require '@nif-assets'
 local paths = require '@self/internal/paths'
@@ -399,18 +400,13 @@ end
 
 --- Findings most severe first, the ones of a severity in the order they were found.
 local function bySeverity(findings: { Finding }): { Finding }
-  local positions: { [Finding]: number } = {}
-  for position, finding in findings do
-    positions[finding] = position
-  end
+  local count = #findings
+  local ranks, order = buffer.create(count), buffer.create(count * 4)
+  into(ranks, 'u8')[for finding in findings => SeverityRank[finding.severity]]
 
-  table.sort(findings, function(left: Finding, right: Finding): boolean
-    local leftRank, rightRank = SeverityRank[left.severity], SeverityRank[right.severity]
-    if leftRank ~= rightRank then return leftRank < rightRank end
-
-    return positions[left] < positions[right]
-  end)
-  return findings
+  -- The sort is stable: findings of one rank keep the places they had.
+  data.argsort(ranks, 'u8', 0, count, order)
+  return [for position in order[1:count, 'u32'] => findings[position + 1]]
 end
 
 --- Runs the NIF check on every model in `users`, keeping the collision findings that matter for
@@ -687,7 +683,7 @@ local function check(inputs: { Input }, lookup: vfs.VFS, options: Options?): Rep
     summary.byCode[finding.code] = (summary.byCode[finding.code] or 0) + 1
   end
 
-  bySeverity(report.findings)
+  report.findings = bySeverity(report.findings)
   table.sort(models)
 
   if wantMeshes then
