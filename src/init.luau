@@ -371,27 +371,34 @@ local function collect(inputs: { Input }, winningOnly: boolean): (references.Fou
     end
   end
 
-  -- The last input to name a file in a record, or to have a problem with one, is the record's.
-  local winners: { [string]: number } = {}
-  local function key(recordType: string, id: string): string
-    return `{recordType}\0{string.lower(id)}`
+  -- The last input to name a file in a record, or to have a problem with one, is the record's:
+  -- by its type, then by its id in lowercase.
+  local winners: { [string]: { [string]: number } } = {}
+  local function claim(index: number, recordType: string, id: string)
+    local byId = winners[recordType]
+    if not byId then
+      byId = {}
+      winners[recordType] = byId
+    end
+
+    byId[string.lower(id)] = index
   end
 
   -- Plugins that are no load order claim nothing: none of their records is asked whose it is.
   local claimants = if winningOnly then collected else {}
   for index, found in claimants do
     for _, reference in found.references do
-      winners[key(reference.recordType, reference.id)] = index
+      claim(index, reference.recordType, reference.id)
     end
 
     for _, problem in found.problems do
-      winners[key(problem.recordType, problem.id)] = index
+      claim(index, problem.recordType, problem.id)
     end
   end
 
   -- Records without an id all apply rather than override each other.
   local function wins(index: number, recordType: string, id: string): boolean
-    return not winningOnly or id == '' or winners[key(recordType, id)] == index
+    return not winningOnly or id == '' or winners[recordType][string.lower(id)] == index
   end
 
   local merged: references.Found = {
