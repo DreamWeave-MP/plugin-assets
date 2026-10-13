@@ -13,7 +13,7 @@ prints. And the command line itself, run once.
     --capability process.spawn --package . --package-path .. \
     bench/bench.luau <scratch> [filter] [jess binary] [package path]
 
-The plugins are built here with `@tes3`, with the mix of records a master has at about a quarter
+The plugins are built here with `@tes3`, with the mix of records a master has at about a tenth
 of Morrowind.esm's size: dialogue responses are most of it, a third of them with a result script,
 then statics, NPCs that share a model per race and sex, body parts, containers, lights, books,
 and items that share models and icons, scripts of some forty lines, and the records that name no
