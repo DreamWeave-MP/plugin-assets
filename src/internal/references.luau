@@ -101,6 +101,12 @@ local Files: { [string]: { Field } } = table.freeze {
   BOOK = Item,
 }
 
+--- What a record type that isn't in `Files` has of them.
+local NoFields: { Field } = table.freeze {}
+
+--- A magic effect's fields that name the statics it spawns as visuals.
+local Visuals: { string } = table.freeze { 'castVisual', 'boltVisual', 'hitVisual', 'areaVisual' }
+
 --- Record types with fields that name files; the rest aren't decoded. `DIAL` names none, but
 --- every `INFO` belongs to the one before it.
 local AssetTags: { string } = table.freeze {
@@ -470,7 +476,7 @@ local function ofPlugin(plugin: tes3.Plugin, name: string): Found
       })
     end
 
-    for _, field in Files[tag] or {} do
+    for _, field in Files[tag] or NoFields do
       refer(field.kind, value[field.field])
     end
 
@@ -488,7 +494,7 @@ local function ofPlugin(plugin: tes3.Plugin, name: string): Found
     end
 
     if tag == 'MGEF' then
-      for _, field in { 'castVisual', 'boltVisual', 'hitVisual', 'areaVisual' } do
+      for _, field in Visuals do
         local visual = value[field]
         if type(visual) == 'string' and visual ~= '' then
           table.insert(found.effectVisuals, string.lower(visual))
