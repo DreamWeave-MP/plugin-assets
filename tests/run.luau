@@ -582,6 +582,41 @@ suite.describe('references', function()
     expect(report.summary.references).toBe(5)
   end)
 
+  suite.it('skip a record whose bytes don\'t read as its type, and read the ones after it', function()
+    local function subrecord(tag: string, payload: string): string
+      return tag .. string.pack('<I4', #payload) .. payload
+    end
+
+    local function record(tag: string, payload: string): string
+      return tag .. string.pack('<I4', #payload) .. string.rep('\0', 8) .. payload
+    end
+
+    -- No record type here has an XXXX, so none of the records holding one decodes: not the
+    -- static, nor the responses with a sound file or a result that names one, nor the script.
+    local stray = subrecord('XXXX', 'stray')
+    local built = tes3.new()
+    local function add(bytes: string) built:insert(built:count(), bytes) end
+
+    add(record('STAT', subrecord('NAME', 'bad\0') .. subrecord('MODL', 'bad.nif\0') .. stray))
+    built:insertValue(built:count(), { type = 'Dialogue', id = 'Rumors' })
+    add(record('INFO', subrecord('INAM', '1\0') .. subrecord('SNAM', 'vo\\bad.mp3\0') .. stray))
+    add(record('INFO', subrecord('INAM', '2\0') .. stray .. subrecord('BNAM', 'Say "bad.wav"')))
+    add(record('INFO', subrecord('INAM', '3\0') .. stray))
+    add(
+      record(
+        'SCPT',
+        subrecord('SCHD', string.rep('\0', 52)) .. subrecord('SCTX', 'say "bad.wav"') .. stray
+      )
+    )
+    built:insertValue(built:count(), static('good', 'good.nif'))
+    built:updateRecordCount()
+
+    local _, lookup = data('undecodable', {})
+    local report = pluginAssets.check({ { name = 'Test.esp', plugin = built } }, lookup)
+    expect(led(report)).toEqual { 'mesh good.nif -> nothing' }
+    expect(report.summary.references).toBe(1)
+  end)
+
   suite.it('read a book\'s images as OpenMW\'s parser does', function()
     local text = '<DIV ALIGN="CENTER"><IMG SRC="map.tga" WIDTH="240" HEIGHT="180"><BR>\n'
       .. '<img src=nosize.tga><IMG SRC=\'img://Icons/X.dds\'>'
