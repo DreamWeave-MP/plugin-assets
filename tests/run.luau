@@ -6,6 +6,7 @@
 -- finding, or load-order rule each. Textures, sounds, and scripts are only names here, since a
 -- lookup never opens one; models are real, since each one found is checked.
 local archive = require '@dream-archive'
+local fs = require '@dream/fs'
 local loadOrder = require '@load-order'
 local nif = require '@nif'
 local openmw = require '@openmw'
@@ -1040,6 +1041,45 @@ suite.describe('a load order', function()
       there 'bookart/a-b/c.dds',
       there 'bookart/a.dds',
       there 'bookart!/a.dds',
+    }
+  end)
+
+  suite.it('lists a file two paths lead to under each, at the one place it is', function()
+    local root = jess.fs.join(scratch, 'plugin-assets', 'used-link')
+    if jess.fs.exists(root) then jess.fs.remove(root) end
+
+    jess.fs.write(jess.fs.join(root, 'sound/boom.wav'), '')
+    jess.fs.write(jess.fs.join(root, 'textures/glow.dds'), '')
+    jess.fs.write(jess.fs.join(root, 'video/end.bik'), '')
+
+    -- `icons` is the textures folder by another name. Where the disk won't make a link (Windows
+    -- asks for a privilege to), there is nothing to hold this to.
+    local linked = fs.symlink(jess.fs.join(root, 'textures'), jess.fs.join(root, 'icons'), { directory = true })
+    if not linked then return end
+
+    local records: { tes3.Value } = {
+      { type = 'Script', id = 'jess_end', text = 'PlayBink "end.bik"' },
+      { type = 'Birthsign', id = 'sign', texture = 'glow.tga' },
+      { type = 'MiscItem', id = 'lamp', icon = 'glow.tga' },
+      { type = 'Sound', id = 'boom', soundPath = 'boom.wav' },
+    }
+    local inputs = { { name = 'Test.esp', plugin = plugin(records) } }
+    local report = pluginAssets.check(inputs, vfs.VFS.fromDirectories { root })
+    expect(led(report)).toEqual {
+      'video end.bik -> video/end.bik',
+      'texture glow.tga -> textures/glow.dds',
+      'icon glow.tga -> icons/glow.dds',
+      'sound boom.wav -> sound/boom.wav',
+    }
+
+    -- Both paths are listed where the file is, between the folders on either side of it, and
+    -- not where the link is, which would come first.
+    local glow = jess.fs.join(root, 'textures/glow.dds')
+    expect(report.usedFiles).toEqual {
+      { file = jess.fs.join(root, 'sound/boom.wav'), path = 'sound/boom.wav', inArchive = false },
+      { file = glow, path = 'icons/glow.dds', inArchive = false },
+      { file = glow, path = 'textures/glow.dds', inArchive = false },
+      { file = jess.fs.join(root, 'video/end.bik'), path = 'video/end.bik', inArchive = false },
     }
   end)
 end)
