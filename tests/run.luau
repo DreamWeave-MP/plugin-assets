@@ -1255,6 +1255,63 @@ suite.describe('models', function()
     expect(sized.summary.files).toBe(1)
     expect(sized.summary.missing).toBe(1)
   end)
+
+  suite.it('are looked up by the kind of field that names them, and told of every record that does', function()
+    local report = check('same-path-kinds', {
+      -- A static uses the model as written; a creature between two loads its animation as well.
+      static('statue', 'actor.nif'),
+      { type = 'Creature', id = 'guar', mesh = 'actor.nif' },
+      static('cast', 'actor.nif'),
+      -- One spelling as an icon, as a magic effect's icon, and as a texture twice.
+      { type = 'MiscItem', id = 'lamp', icon = 'glow.tga' },
+      { type = 'MagicEffect', effectId = 'WaterBreathing', icon = 'glow.tga', texture = 'glow.tga' },
+      { type = 'Birthsign', id = 'sign', texture = 'glow.tga' },
+      -- One missing file, by two records and then a third in another case.
+      static('first', 'gone.nif'),
+      static('second', 'gone.nif'),
+      static('third', 'Gone.nif'),
+    }, {
+      ['meshes/actor.nif'] = shape(),
+      ['meshes/xactor.kf'] = shape(),
+      ['meshes/xactor.nif'] = shape(),
+      ['icons/glow.dds'] = '',
+      ['textures/glow.tga'] = '',
+    })
+
+    expect(led(report)).toEqual {
+      'mesh actor.nif -> meshes/actor.nif',
+      'animatedMesh actor.nif -> meshes/actor.nif',
+      'mesh actor.nif -> meshes/actor.nif',
+      'icon glow.tga -> icons/glow.dds',
+      'effectIcon glow.tga -> icons/glow.dds',
+      'texture glow.tga -> textures/glow.tga',
+      'texture glow.tga -> textures/glow.tga',
+      'mesh gone.nif -> nothing',
+      'mesh gone.nif -> nothing',
+      'mesh Gone.nif -> nothing',
+    }
+
+    expect(meshPaths(report)).toEqual { 'meshes/actor.nif', 'meshes/xactor.kf', 'meshes/xactor.nif' }
+    expect(report.meshes[1].usedBy).toEqual { 'STAT statue', 'CREA guar', 'STAT cast' }
+    expect(report.meshes[2].usedBy).toEqual { 'CREA guar' }
+    expect(report.meshes[3].usedBy).toEqual { 'CREA guar' }
+
+    -- Every record has its own finding, each in the words of its own spelling.
+    expect(said(report)).toEqual {
+      'missingBigIcon MGEF WaterBreathing: large icon for "glow.tga" not found (tried icons/b_glow.dds, icons/b_glow.tga)',
+      'missingMesh STAT first: model "gone.nif" not found at meshes/gone.nif',
+      'missingMesh STAT second: model "gone.nif" not found at meshes/gone.nif',
+      'missingMesh STAT third: model "Gone.nif" not found at meshes/gone.nif',
+      'uncompressedTexture MGEF WaterBreathing: "textures/glow.tga" isn\'t a DDS file, so it loads uncompressed and has its mipmaps built at load time',
+      'uncompressedTexture BSGN sign: "textures/glow.tga" isn\'t a DDS file, so it loads uncompressed and has its mipmaps built at load time',
+    }
+
+    -- A file is one by its kind and its path, whatever the case, and missing once.
+    expect(report.summary.references).toBe(10)
+    expect(report.summary.files).toBe(6)
+    expect(report.summary.missing).toBe(2)
+    expect(report.summary.byCode).toEqual { missingBigIcon = 1, missingMesh = 3, uncompressedTexture = 2 }
+  end)
 end)
 
 suite.describe('options', function()
