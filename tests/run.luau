@@ -98,31 +98,22 @@ end
 
 --- What each finding of a report says: `code TYPE id: message`.
 local function said(report: pluginAssets.Report): { string }
-  local out = {}
-  for _, finding in report.findings do
-    table.insert(out, `{finding.code} {finding.recordType} {finding.id}: {finding.message}`)
-  end
-
-  return out
+  return [
+    for {code, recordType, id, message} in report.findings
+    => `{code} {recordType} {id}: {message}`
+  ]
 end
 
 --- Each reference of a report as `kind path -> resolved`.
 local function led(report: pluginAssets.Report): { string }
-  local out = {}
-  for _, reference in report.references do
-    table.insert(out, `{reference.kind} {reference.path} -> {reference.resolved or 'nothing'}`)
-  end
-
-  return out
+  return [
+    for {kind, path, resolved} in report.references
+    => `{kind} {path} -> {resolved or 'nothing'}`
+  ]
 end
 
 local function meshPaths(report: pluginAssets.Report): { string }
-  local out = {}
-  for _, mesh in report.meshes do
-    table.insert(out, mesh.path)
-  end
-
-  return out
+  return [for mesh in report.meshes => mesh.path]
 end
 
 local function static(id: string, mesh: string): tes3.Value
@@ -586,11 +577,7 @@ suite.describe('references', function()
       'video eight.bik -> nothing',
     }
 
-    local ids = {}
-    for _, finding in report.findings do
-      table.insert(ids, finding.id)
-    end
-
+    local ids = [for finding in report.findings => finding.id]
     expect(ids).toEqual { 'Rumors: 5', 'Rumors: 6', 'Rumors: 7', 'Rumors: 7', 'Greeting 1: 8' }
     expect(report.summary.references).toBe(5)
   end)
@@ -779,10 +766,7 @@ suite.describe('findings', function()
       { type = 'Book', id = 'open', mesh = 'meshes\\x\\rock.nif', icon = 'book.tga', text = '<IMG' },
       static('nowhere', 'none.nif'),
     }, { ['textures/tx_sand.tga'] = '', ['meshes/x/rock.nif'] = shape() })
-    local order = {}
-    for _, finding in report.findings do
-      table.insert(order, `{finding.severity} {finding.code} {finding.id}`)
-    end
+    local order = [for {severity, code, id} in report.findings => `{severity} {code} {id}`]
 
     expect(order).toEqual {
       -- Problems with a record's text come before problems with its files.
@@ -1007,10 +991,7 @@ suite.describe('a load order', function()
     local root, lookup = data('used-order', onDisk)
     local book = { type = 'Book', id = 'jess_atlas', text = table.concat(images) }
     local report = pluginAssets.check({ { name = 'Test.esp', plugin = plugin { book } } }, lookup)
-    local used = {}
-    for _, file in report.usedFiles do
-      table.insert(used, `{file.file} = {file.path}`)
-    end
+    local used = [for {file, path} in report.usedFiles => `{file} = {path}`]
 
     local function there(file: string): string
       return `{jess.fs.join(root, file)} = {string.lower(file)}`
@@ -1100,12 +1081,7 @@ suite.describe('models', function()
     }, files)
     local codes: { [string]: { string } } = {}
     for _, mesh in report.meshes do
-      local found = {}
-      for _, finding in mesh.findings do
-        table.insert(found, `{finding.severity} {finding.code}`)
-      end
-
-      codes[mesh.path] = found
+      codes[mesh.path] = [for {severity, code} in mesh.findings => `{severity} {code}`]
     end
 
     expect(codes).toEqual {

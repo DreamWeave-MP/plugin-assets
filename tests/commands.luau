@@ -40,21 +40,11 @@ end
 
 --- Each reference of a result as `path <- the file or archive it resolved from`.
 local function sourced(result: commands.CheckResult): { string }
-  local out = {}
-  for _, reference in result.report.references do
-    table.insert(out, `{reference.path} <- {reference.source or 'nothing'}`)
-  end
-
-  return out
+  return [for {path, source} in result.report.references => `{path} <- {source or 'nothing'}`]
 end
 
 local function meshPaths(result: commands.CheckResult): { string }
-  local out = {}
-  for _, mesh in result.report.meshes do
-    table.insert(out, mesh.path)
-  end
-
-  return out
+  return [for mesh in result.report.meshes => mesh.path]
 end
 
 local function canonical(path: string): string return fs.canonicalize(path) or path end
@@ -117,10 +107,7 @@ suite.describe('jess plugin assets\' harness', function()
 
   suite.it('lists the files the plugin loads, with where each is on disk', function()
     local result = commands.check { plugins = { built.plugin } }
-    local used: { string } = {}
-    for _, file in result.report.usedFiles do
-      table.insert(used, file.path)
-    end
+    local used = [for file in result.report.usedFiles => file.path]
 
     expect(used).toContain 'meshes/rock.nif'
     expect(result.plugins).toEqual { { name = 'Jess.esp', path = built.plugin } }
