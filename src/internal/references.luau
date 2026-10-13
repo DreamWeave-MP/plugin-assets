@@ -152,8 +152,13 @@ local ScriptFiles: { [string]: Kind } = { say = 'voice', streammusic = 'music', 
 
 --- Any of those names, in either case of each ASCII letter, as bytes: record text is in a code
 --- page that spells ASCII as ASCII, so text without a match, decoded or not, calls none of them.
+local FileFunctionNames: { string } = {}
+for name in ScriptFiles do
+  table.insert(FileFunctionNames, name)
+end
+
 local FileFunction =
-  bytes.regex('say|streammusic|playbink', { caseInsensitive = true, unicode = false })
+  bytes.regex(table.concat(FileFunctionNames, '|'), { caseInsensitive = true, unicode = false })
 
 --- `getDistantMeshPattern`: the suffix of distant models, by the bits of a content file's
 --- version as a 32-bit float (1.2 and 1.3, 0.8 and 1.0, 0.94 and 1.7).
