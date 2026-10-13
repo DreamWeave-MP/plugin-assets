@@ -352,27 +352,31 @@ local function summaryValue(summary: pluginAssets.Summary): Value
   }
 end
 
-local function findingValue(finding: pluginAssets.Finding): Value
+local function findingValue(
+  {severity, code, message, plugin, recordType, id, path}: pluginAssets.Finding
+): Value
   return serialize.struct {
-    { 'severity', snake(finding.severity) },
-    { 'code', snake(finding.code) },
-    { 'message', finding.message },
-    { 'plugin', finding.plugin },
-    { 'record_type', finding.recordType },
-    { 'id', finding.id },
-    { 'path', finding.path },
+    { 'severity', snake(severity) },
+    { 'code', snake(code) },
+    { 'message', message },
+    { 'plugin', plugin },
+    { 'record_type', recordType },
+    { 'id', id },
+    { 'path', path },
   }
 end
 
-local function referenceValue(reference: pluginAssets.ResolvedReference): Value
+local function referenceValue(
+  {plugin, recordType, id, kind, path, resolved, source}: pluginAssets.ResolvedReference
+): Value
   return serialize.struct {
-    { 'plugin', reference.plugin },
-    { 'record_type', reference.recordType },
-    { 'id', reference.id },
-    { 'kind', snake(reference.kind) },
-    { 'path', reference.path },
-    { 'resolved', reference.resolved },
-    { 'source', reference.source },
+    { 'plugin', plugin },
+    { 'record_type', recordType },
+    { 'id', id },
+    { 'kind', snake(kind) },
+    { 'path', path },
+    { 'resolved', resolved },
+    { 'source', source },
   }
 end
 
@@ -428,12 +432,8 @@ local function meshValue(mesh: pluginAssets.MeshReport): Value
   }
 end
 
-local function usedFileValue(file: pluginAssets.UsedFile): Value
-  return serialize.struct {
-    { 'file', file.file },
-    { 'path', file.path },
-    { 'in_archive', file.inArchive },
-  }
+local function usedFileValue({file, path, inArchive}: pluginAssets.UsedFile): Value
+  return serialize.struct { { 'file', file }, { 'path', path }, { 'in_archive', inArchive } }
 end
 
 --- A report's sections in the order jess printed them: the summary and findings, the models when
@@ -486,24 +486,21 @@ local function diagnostics(result: commands.CheckResult, options: Options?): str
     end
   end
 
-  local summary = result.report.summary
+  local {unreadablePlugins, missing, meshesWontLoad} = result.report.summary
   local failures: { string } = {}
-  if summary.unreadablePlugins > 0 then
+  if unreadablePlugins > 0 then
     table.insert(
       failures,
-      counted(summary.unreadablePlugins, 'plugin couldn\'t be read', 'plugins couldn\'t be read')
+      counted(unreadablePlugins, 'plugin couldn\'t be read', 'plugins couldn\'t be read')
     )
   end
 
-  if summary.missing > 0 then
-    table.insert(
-      failures,
-      counted(summary.missing, 'referenced file is missing', 'referenced files are missing')
-    )
+  if missing > 0 then
+    table.insert(failures, counted(missing, 'referenced file is missing', 'referenced files are missing'))
   end
 
-  if summary.meshesWontLoad > 0 then
-    table.insert(failures, counted(summary.meshesWontLoad, 'model won\'t load', 'models won\'t load'))
+  if meshesWontLoad > 0 then
+    table.insert(failures, counted(meshesWontLoad, 'model won\'t load', 'models won\'t load'))
   end
 
   if #failures > 0 then table.insert(lines, `error: {table.concat(failures, '; ')}\n`) end
@@ -513,10 +510,8 @@ end
 
 --- 1 when a referenced file is missing, a plugin couldn't be read, or a model won't load; else 0.
 local function status(result: commands.CheckResult): number
-  local summary = result.report.summary
-  if summary.unreadablePlugins > 0 or summary.missing > 0 or summary.meshesWontLoad > 0 then
-    return Exit.failed
-  end
+  local {unreadablePlugins, missing, meshesWontLoad} = result.report.summary
+  if unreadablePlugins > 0 or missing > 0 or meshesWontLoad > 0 then return Exit.failed end
 
   return Exit.ok
 end
