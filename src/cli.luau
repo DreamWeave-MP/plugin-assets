@@ -292,10 +292,19 @@ local function parse(argv: { string }): (Command?, string?)
   return command(given), nil
 end
 
+--- The names spelled so far: a report has a few dozen severities, codes, and kinds between them,
+--- and each is on many of its rows.
+local Snakes: { [string]: string } = {}
+
 --- A camelCase field or code as serde spelled it in jess's output: `missingAsset` is
 --- `missing_asset`.
 local function snake(name: string): string
-  return (string.gsub(name, '%u', function(letter: string): string return `_{string.lower(letter)}` end))
+  local spelled = Snakes[name]
+  if spelled then return spelled end
+
+  spelled = string.gsub(name, '%u', function(letter: string): string return `_{string.lower(letter)}` end)
+  Snakes[name] = spelled
+  return spelled
 end
 
 --- Counts by code, the codes in snake_case and in order, as a `BTreeMap` serializes.
