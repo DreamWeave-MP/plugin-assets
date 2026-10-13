@@ -377,7 +377,9 @@ local function collect(inputs: { Input }, winningOnly: boolean): (references.Fou
     return `{recordType}\0{string.lower(id)}`
   end
 
-  for index, found in collected do
+  -- Plugins that are no load order claim nothing: none of their records is asked whose it is.
+  local claimants = if winningOnly then collected else {}
+  for index, found in claimants do
     for _, reference in found.references do
       winners[key(reference.recordType, reference.id)] = index
     end
