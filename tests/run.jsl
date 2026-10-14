@@ -166,7 +166,7 @@ local MissingIcon: pluginAssets.Finding = {
   path = 'm\\coin.tga',
 }
 
--- `contracts/assets/assets.luau` and the JSON it printed. What differs: the plugin is handed over
+-- `contracts/assets/assets.jsl` and the JSON it printed. What differs: the plugin is handed over
 -- opened and named, with the VFS over its folder, where the old call took a plugin, path, or name
 -- and found the folder itself; so the contract's two refusals about what was passed (`expected
 -- plugins, paths, or names`, `checking the load order needs an OpenMW config`) have nothing to

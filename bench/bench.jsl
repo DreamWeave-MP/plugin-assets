@@ -11,7 +11,7 @@ prints. And the command line itself, run once.
 
   jess run --capability filesystem.read --capability filesystem.write \
     --capability process.spawn --package . --package-path .. \
-    bench/bench.luau <scratch> [filter] [jess binary] [package path]
+    bench/bench.jsl <scratch> [filter] [jess binary] [package path]
 
 The plugins are built here with `@tes3`, with the mix of records a master has at about a tenth
 of Morrowind.esm's size: dialogue responses are most of it, a third of them with a result script,
@@ -28,7 +28,7 @@ here, so a path that stops doing its work fails instead of posting a time.
 
 Given the jess binary to start (and `process.spawn`), the cold workloads too: what one process
 pays for one command from its first `require` on. Each is the median of seven processes running
-`cold.luau`, which find the packages this one depends on in the package path, the folder above
+`cold.jsl`, which find the packages this one depends on in the package path, the folder above
 this package without one.
 ]]
 
@@ -644,7 +644,7 @@ local function scriptList(count: number): string
     if index % 8 == 0 then
       lines[index] = `# scripts of part {index}`
     elseif index % 32 == 5 then
-      lines[index] = `PLAYER: scripts/bench/part_{index}.luau`
+      lines[index] = `PLAYER: scripts/bench/part_{index}.jsl`
     elseif index % 32 == 21 then
       lines[index] = `scripts/bench/part_{index}.lua`
     else
@@ -895,7 +895,7 @@ local function cold(name: string, expected: number, status: number, argv: { stri
     PackagePath,
     -- The arguments after the script are the command's, flags and all, not jess's.
     '--',
-    `{Here}/cold.luau`,
+    `{Here}/cold.jsl`,
   }
 
   for _, argument in argv do

@@ -1,6 +1,6 @@
 # plugin-assets benchmarks
 
-`bench/bench.luau` times the package through its public modules: `check` over a load order (the
+`bench/bench.jsl` times the package through its public modules: `check` over a load order (the
 references listed or only the findings, counted as a load order or as plugins on their own, cut
 down to a severity), over a patch whose models go through the NIF check, over one kind of record
 at a time, and over a script list; `commands.check` over plugins named by path; the argument list
@@ -13,13 +13,13 @@ what most of the references lead to, 5,546 files: small models built with `@nif`
 for the rest, since a lookup never opens one. A warm workload is warmed up, sized to a batch of
 about a tenth of a second, and reported as the median of seven batches with a full collection
 between them. A `cold:` workload is the median of seven fresh processes running
-`bench/cold.luau`, which is the command line run once, timed inside the script from its first
+`bench/cold.jsl`, which is the command line run once, timed inside the script from its first
 `require`. Every workload's answer is weighed, the whole report spelled out and checksummed, and
 compared with the one pinned in the file.
 
 ```sh
 jess run --capability filesystem.read --capability filesystem.write --capability process.spawn \
-  --package jpk/plugin-assets --package-path jpk jpk/plugin-assets/bench/bench.luau \
+  --package jpk/plugin-assets --package-path jpk jpk/plugin-assets/bench/bench.jsl \
   <scratch> [filter] [jess binary] [package path]
 ```
 
