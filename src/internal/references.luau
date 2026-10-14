@@ -102,7 +102,7 @@ local Files: { [string]: { Field } } = table.freeze {
 }
 
 --- What a record type that isn't in `Files` has of them.
-local NoFields: { Field } = table.freeze {}
+local NoFields = table.freeze({} :: { Field })
 
 --- A magic effect's fields that name the statics it spawns as visuals.
 local Visuals: { string } = table.freeze { 'castVisual', 'boltVisual', 'hitVisual', 'areaVisual' }

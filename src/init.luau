@@ -468,7 +468,7 @@ local function checkMeshes(
       local kept = [
         for finding in file.findings
         if finding.severity ~= 'collision' and finding.code ~= 'renderGeometryCollision'
-        => finding
+        => finding :: nifAssets.FindingReport
       ]
 
       file.findings = kept
