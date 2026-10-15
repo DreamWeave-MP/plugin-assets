@@ -151,3 +151,64 @@ left as it was; `@vfs` knows its roots and could answer for a whole folder at on
 `@tes3` decoding the records that do name files, `@vfs` answering whether a path exists
 (seventeen times for each distant model that might have levels of detail), and `@nif-assets`
 searching for icons and textures. A model's NIF check is `@nif-assets`' time.
+
+## Which modules are native, and why
+
+Jess compiles to machine code only what is marked (`--!native` on a module, `@native` on one
+function), and every load pays for what is marked. A module carries `--!native` when a row below
+spends its time there and the module is small (12 KB or less); a larger module carries `@native`
+on the functions the row spends its time in, and nothing else.
+
+Measured 2026-10-15 with `jess 0.1.0`, the verified release build of jess `4ff67ea` on l3i
+2.1.0, on the i7-10870H, the one-minute load 0.30 and 1.48 at the start of the two
+sessions. In each session the bench ran alternately on this package and on a copy of it with
+every module marked, three fresh runs of `bench/bench.jsl` each, every run's row the median of
+its batches; a column is the median of the three, and a ratio is against the all-marked runs of
+the same session. Which functions a row spends its time in comes from `jess run --profile` of
+that row alone, unmarked. The load cost is a fresh `jess run --package <this package>
+--package-path jpk` of a script that only requires `@plugin-assets`, the two sides alternating, the
+median of five each after one warm-up.
+
+| Requiring `@plugin-assets` | All marked | This state |
+| --- | ---: | ---: |
+| Unmarked | 0.208 s | 0.201 s |
+| Final | 0.204 s | 0.202 s |
+
+| Row | All marked (ms) | Unmarked / all marked | Final (ms) | Final / all marked |
+| --- | ---: | ---: | ---: | ---: |
+| check a load order, lookups only | 42.51 | **1.081×** | 42.24 | 0.994× |
+| check a load order, findings only | 17.46 | **1.118×** | 17.49 | 1.001× |
+| check a load order as plugins on their own | 43.88 | **1.053×** | 44.06 | 1.004× |
+| check a load order, shown down to broken | 17.23 | **1.100×** | 16.99 | 0.986× |
+| check a patch and its 96 models | 9.233 | 1.019× | 9.197 | 0.996× |
+| check a patch and its 96 models, shown down to broken | 9.210 | 1.024× | 9.182 | 0.997× |
+| check 2,048 statics | 63.19 | 1.034× | 62.28 | 0.986× |
+| check 2,048 NPCs of twenty models | 8.907 | 1.044× | 8.787 | 0.986× |
+| check 1,024 items | 46.08 | 1.021× | 45.38 | 0.985× |
+| check 256 scripts | 0.7297 | **1.162×** | 0.7210 | 0.988× |
+| check 256 books | 2.848 | **1.072×** | 2.878 | 1.010× |
+| check 4,096 responses | 3.558 | **1.138×** | 3.536 | 0.994× |
+| check a script list of 2,048 lines | 5.488 | **1.141×** | 5.421 | 0.988× |
+| the command over three plugins by path, as the command line asks | 32.08 | **1.083×** | 31.99 | 0.997× |
+| parse 8 argument lists | 0.00794 | **1.140×** | 0.00922 | **1.161×** |
+| render a report as yaml | 124.7 | 1.028× | 117.9 | 0.946× |
+| render a report as json | 13.08 | 0.999× | 13.19 | 1.008× |
+| render a report as toml | 21.15 | 1.016× | 20.96 | 0.991× |
+| render a patch, its models, references, and files used as yaml | 45.42 | 0.989× | 43.52 | 0.958× |
+| render a patch, its models, references, and files used as json | 4.687 | 1.012× | 4.696 | 1.002× |
+| render a patch, its models, references, and files used as toml | 9.375 | 1.002× | 9.351 | 0.997× |
+| render the files a patch uses as yaml | 5.440 | 1.000× | 5.249 | 0.965× |
+| say what is missing beside the file list | 0.2549 | **1.159×** | 0.2916 | **1.144×** |
+
+What carries the directive (every module here is one a row spends its time in, unmarked):
+
+- Whole: `init`, `internal/references`.
+- Unmarked: `cli`, `commands`, `internal/paths`, `main`.
+
+Marked by function first (`init`'s lookups and claims, `internal/references`' readers and
+trimming), every check and render stayed 1.06x to 1.14x slower than all marked: the two modules
+are 26 KB and 19 KB of record walking, and a check spends its time across all of it, not in a
+few functions. So both are marked whole, and every check and render row came back within 5%.
+The two rows still above it are once-a-run work in `cli`, which parses a command line and is
+never marked: `parse 8 argument lists` (1.161x, of 8 µs) and `say what is missing beside the file
+list` (1.144x, of 0.3 ms), `cli.diagnostics` formatting a report's summary.
