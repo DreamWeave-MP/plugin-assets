@@ -104,7 +104,7 @@ local function keep(tag: string): tes3.Keep return if Kept[tag] then 'whole' els
 
 --- A file name's extension in lowercase, or nil without one.
 local function extension(path: string): string?
-  local name = jess.fs.fileName(path) or path
+  local name = fs.fileName(path) or path
   local found = string.match(name, '^.+%.([^.]*)$')
   return if found then string.lower(found) else nil
 end
@@ -186,14 +186,14 @@ local function check(request: CheckRequest): CheckResult
 
   -- A plugin finds the files shipped beside it: its folder, the current one for a bare name.
   for _, path in paths do
-    local folder = jess.fs.parent(path)
+    local folder = fs.parent(path)
     if folder then addData(lookup, sources, if folder == '' then '.' else folder) end
   end
 
   local inputs: { pluginAssets.Input } = {}
   local files: { PluginFile } = {}
   for _, path in paths do
-    local name = jess.fs.fileName(path) or path
+    local name = fs.fileName(path) or path
     local input = open(path, name, encoding)
     table.insert(inputs, input)
     table.insert(files, { name = name, path = path, problem = input.problem })

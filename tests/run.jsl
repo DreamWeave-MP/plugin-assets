@@ -75,12 +75,15 @@ end
 --- A fresh data folder under the scratch root holding `files` by their paths below it, and the
 --- VFS over it.
 local function data(name: string, files: { [string]: string | buffer }): (string, vfs.VFS)
-  local root = jess.fs.join(scratch, 'plugin-assets', name)
-  if jess.fs.exists(root) then jess.fs.remove(root) end
+  local root = fs.join(scratch, 'plugin-assets', name)
+  if fs.exists(root) then fs.remove(root) end
 
-  jess.fs.createDir(root)
+  local done, problem = fs.mkdir(root, { recursive = true })
+  if not done then error(problem, 0) end
+
   for path, bytes in files do
-    jess.fs.write(jess.fs.join(root, path), bytes)
+    local done, problem = fs.writeFile(fs.join(root, path), bytes, { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
   end
 
   return root, vfs.VFS.fromDirectories { root }
@@ -174,8 +177,8 @@ local MissingIcon: pluginAssets.Finding = {
 suite.describe('jess.plugin.assets\' contract', function()
   suite.it('reports the references, findings, model, and files of Rocks.esp', function()
     local root, lookup = data('contract', RockFiles)
-    local model = jess.fs.join(root, 'meshes/jess/rock.nif')
-    local texture = jess.fs.join(root, 'textures/tx_rock.dds')
+    local model = fs.join(root, 'meshes/jess/rock.nif')
+    local texture = fs.join(root, 'textures/tx_rock.dds')
     local report = pluginAssets.check({ { name = 'Rocks.esp', plugin = plugin(Rocks) } }, lookup)
     expect(report).toEqual {
       summary = {
@@ -955,31 +958,36 @@ suite.describe('a load order', function()
   end)
 
   suite.it('reads what @load-order opened, over the configuration\'s VFS', function()
-    local root = jess.fs.join(scratch, 'plugin-assets', 'configured')
-    if jess.fs.exists(root) then jess.fs.remove(root) end
+    local root = fs.join(scratch, 'plugin-assets', 'configured')
+    if fs.exists(root) then fs.remove(root) end
 
     local base = plugin { static('rock', 'x\\rock.nif'), { type = 'Sound', id = 'boom', soundPath = 'boom.wav' } }
-    jess.fs.write(jess.fs.join(root, 'data/Base.esm'), base:save())
-    jess.fs.write(jess.fs.join(root, 'data/Broken.esp'), 'not a plugin')
-    jess.fs.write(jess.fs.join(root, 'data/meshes/x/rock.nif'), shape 'tx_rock.tga')
+    local done, problem = fs.writeFile(fs.join(root, 'data/Base.esm'), base:save(), { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(fs.join(root, 'data/Broken.esp'), 'not a plugin', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(fs.join(root, 'data/meshes/x/rock.nif'), shape 'tx_rock.tga', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
 
     local builder = archive.bsa.tes3.Builder.new()
     builder:addBytes('textures/tx_rock.dds', 'archived')
     builder:addBytes('sound/boom.wav', 'archived')
-    builder:writePath(jess.fs.join(root, 'data/Pack.bsa'))
-    jess.fs.write(
-      jess.fs.join(root, 'openmw.cfg'),
-      'data=data\nfallback-archive=Pack.bsa\ncontent=Base.esm\ncontent=Broken.esp\n'
+    builder:writePath(fs.join(root, 'data/Pack.bsa'))
+    local done, problem = fs.writeFile(
+      fs.join(root, 'openmw.cfg'),
+      'data=data\nfallback-archive=Pack.bsa\ncontent=Base.esm\ncontent=Broken.esp\n',
+      { atomic = true, createParents = true }
     )
+    if not done then error(problem, 0) end
 
-    local context = openmw.new(jess.fs.join(root, 'openmw.cfg'))
+    local context = openmw.new(fs.join(root, 'openmw.cfg'))
     local opened = loadOrder.open(context, { types = pluginAssets.recordTypes })
     local inputs: { pluginAssets.Input } = { opened.plugins[1], opened.failures[1] }
     local report = pluginAssets.check(inputs, context:vfs())
-    local pack = jess.fs.join(root, 'data/Pack.bsa')
-    local model = jess.fs.join(root, 'data/meshes/x/rock.nif')
+    local pack = fs.join(root, 'data/Pack.bsa')
+    local model = fs.join(root, 'data/meshes/x/rock.nif')
     expect(said(report)).toEqual {
-      `unreadablePlugin  : failed to parse '{jess.fs.join(root, 'data/Broken.esp')}': truncated record header at offset 0`,
+      `unreadablePlugin  : failed to parse '{fs.join(root, 'data/Broken.esp')}': truncated record header at offset 0`,
     }
 
     expect(report.references[2]).toEqual {
@@ -1030,7 +1038,7 @@ suite.describe('a load order', function()
     local used = [for {file, path} in report.usedFiles => `{file} = {path}`]
 
     local function there(file: string): string
-      return `{jess.fs.join(root, file)} = {string.lower(file)}`
+      return `{fs.join(root, file)} = {string.lower(file)}`
     end
 
     expect(used).toEqual {
@@ -1045,16 +1053,19 @@ suite.describe('a load order', function()
   end)
 
   suite.it('lists a file two paths lead to under each, at the one place it is', function()
-    local root = jess.fs.join(scratch, 'plugin-assets', 'used-link')
-    if jess.fs.exists(root) then jess.fs.remove(root) end
+    local root = fs.join(scratch, 'plugin-assets', 'used-link')
+    if fs.exists(root) then fs.remove(root) end
 
-    jess.fs.write(jess.fs.join(root, 'sound/boom.wav'), '')
-    jess.fs.write(jess.fs.join(root, 'textures/glow.dds'), '')
-    jess.fs.write(jess.fs.join(root, 'video/end.bik'), '')
+    local done, problem = fs.writeFile(fs.join(root, 'sound/boom.wav'), '', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(fs.join(root, 'textures/glow.dds'), '', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(fs.join(root, 'video/end.bik'), '', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
 
     -- `icons` is the textures folder by another name. Where the disk won't make a link (Windows
     -- asks for a privilege to), there is nothing to hold this to.
-    local linked = fs.symlink(jess.fs.join(root, 'textures'), jess.fs.join(root, 'icons'), { directory = true })
+    local linked = fs.symlink(fs.join(root, 'textures'), fs.join(root, 'icons'), { directory = true })
     if not linked then return end
 
     local records: { tes3.Value } = {
@@ -1074,12 +1085,12 @@ suite.describe('a load order', function()
 
     -- Both paths are listed where the file is, between the folders on either side of it, and
     -- not where the link is, which would come first.
-    local glow = jess.fs.join(root, 'textures/glow.dds')
+    local glow = fs.join(root, 'textures/glow.dds')
     expect(report.usedFiles).toEqual {
-      { file = jess.fs.join(root, 'sound/boom.wav'), path = 'sound/boom.wav', inArchive = false },
+      { file = fs.join(root, 'sound/boom.wav'), path = 'sound/boom.wav', inArchive = false },
       { file = glow, path = 'icons/glow.dds', inArchive = false },
       { file = glow, path = 'textures/glow.dds', inArchive = false },
-      { file = jess.fs.join(root, 'video/end.bik'), path = 'video/end.bik', inArchive = false },
+      { file = fs.join(root, 'video/end.bik'), path = 'video/end.bik', inArchive = false },
     }
   end)
 end)

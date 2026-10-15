@@ -86,18 +86,24 @@ export type Built = {
 
 --- Builds the harness's folders fresh under `folder`.
 local function build(folder: string): Built
-  if jess.fs.exists(folder) then fs.remove(folder, { recursive = true }) end
+  if fs.exists(folder) then fs.remove(folder, { recursive = true }) end
 
-  local textures = jess.fs.join(folder, 'textures-only')
-  local path = jess.fs.join(folder, 'Jess.esp')
-  jess.fs.write(jess.fs.join(folder, 'meshes/rock.nif'), rock())
-  jess.fs.write(jess.fs.join(folder, 'meshes/broken.nif'), broken())
-  jess.fs.write(jess.fs.join(folder, 'meshes/textured.nif'), textured 'tx_there.tga')
-  jess.fs.write(jess.fs.join(textures, 'textures/tx_there.dds'), 'DDS ')
-  jess.fs.write(
+  local textures = fs.join(folder, 'textures-only')
+  local path = fs.join(folder, 'Jess.esp')
+  local done, problem = fs.writeFile(fs.join(folder, 'meshes/rock.nif'), rock(), { atomic = true, createParents = true })
+  if not done then error(problem, 0) end
+  local done, problem = fs.writeFile(fs.join(folder, 'meshes/broken.nif'), broken(), { atomic = true, createParents = true })
+  if not done then error(problem, 0) end
+  local done, problem = fs.writeFile(fs.join(folder, 'meshes/textured.nif'), textured 'tx_there.tga', { atomic = true, createParents = true })
+  if not done then error(problem, 0) end
+  local done, problem = fs.writeFile(fs.join(textures, 'textures/tx_there.dds'), 'DDS ', { atomic = true, createParents = true })
+  if not done then error(problem, 0) end
+  local done, problem = fs.writeFile(
     path,
-    plugin { static('jess_rock', 'rock.nif'), static('jess_textured', 'textured.nif') }
+    plugin { static('jess_rock', 'rock.nif'), static('jess_textured', 'textured.nif') },
+    { atomic = true, createParents = true }
   )
+  if not done then error(problem, 0) end
 
   return { root = folder, plugin = path, textures = textures }
 end

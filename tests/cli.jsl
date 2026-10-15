@@ -7,9 +7,11 @@
 local cli = require '@plugin-assets/cli'
 local commands = require '@plugin-assets/commands'
 local fixture = require './fixture'
+local fs = require '@dream/fs'
 local json = require '@jess/json'
 local pluginAssets = require '@plugin-assets'
 local test = require '@jess/test'
+local toml = require '@jess/data/toml'
 
 local expect = test.expect
 local suite = test.new()
@@ -538,7 +540,7 @@ used_files:
   end)
 
   suite.it('writes TOML with what is absent left out', function()
-    local document = jess.toml.decode(cli.render(everything(), { format = 'toml', verbose = true }))
+    local document = toml.decode(cli.render(everything(), { format = 'toml', verbose = true }))
     local summary = document.summary :: { [string]: unknown }
     expect(summary.meshes_by_code).toEqual { missing_texture = 1, wont_load = 1 }
     expect(summary.unreadable_plugins).toBe(1)
@@ -622,7 +624,7 @@ suite.describe('status and diagnostics', function()
 end)
 
 suite.describe('run', function()
-  local built = fixture.build(jess.fs.join(scratch, 'plugin-assets-cli', 'harness'))
+  local built = fixture.build(fs.join(scratch, 'plugin-assets-cli', 'harness'))
 
   --- What `run` prints for `argv`, read back as the harness read it: the parsed JSON document.
   local function printed(argv: { string }): { [string]: unknown }
@@ -643,9 +645,9 @@ suite.describe('run', function()
   end)
 
   suite.it('returns 9 for a check that can\'t be made', function()
-    expect(cli.run { jess.fs.join(built.root, 'Gone.esp') }).toBe(9)
-    expect(cli.run { built.plugin, '--data', jess.fs.join(built.root, 'nowhere') }).toBe(9)
-    expect(cli.run { built.plugin, '--data', jess.fs.join(built.root, 'meshes/rock.nif') }).toBe(9)
+    expect(cli.run { fs.join(built.root, 'Gone.esp') }).toBe(9)
+    expect(cli.run { built.plugin, '--data', fs.join(built.root, 'nowhere') }).toBe(9)
+    expect(cli.run { built.plugin, '--data', fs.join(built.root, 'meshes/rock.nif') }).toBe(9)
   end)
 
   suite.it('checks the harness\'s plugin as jess plugin assets did, flag for flag', function()
@@ -686,8 +688,8 @@ suite.describe('run', function()
   end)
 
   suite.it('returns 1 once a model the plugin names isn\'t anywhere', function()
-    local removed = fixture.build(jess.fs.join(scratch, 'plugin-assets-cli', 'harness-missing'))
-    jess.fs.remove(jess.fs.join(removed.root, 'meshes/rock.nif'))
+    local removed = fixture.build(fs.join(scratch, 'plugin-assets-cli', 'harness-missing'))
+    fs.remove(fs.join(removed.root, 'meshes/rock.nif'))
 
     local argv = { '--format', 'json', '--no-meshes', removed.plugin }
     expect(cli.run(argv)).toBe(1)
@@ -701,19 +703,23 @@ suite.describe('run', function()
   end)
 
   suite.it('returns 1 for a plugin that can\'t be read, and for a model that won\'t load', function()
-    local root = jess.fs.join(scratch, 'plugin-assets-cli', 'failures')
-    jess.fs.write(jess.fs.join(root, 'Junk.esp'), 'junk')
-    jess.fs.write(jess.fs.join(root, 'meshes/broken.nif'), fixture.broken())
-    jess.fs.write(
-      jess.fs.join(root, 'Broken.esp'),
-      fixture.plugin { fixture.static('broken', 'broken.nif') }
+    local root = fs.join(scratch, 'plugin-assets-cli', 'failures')
+    local done, problem = fs.writeFile(fs.join(root, 'Junk.esp'), 'junk', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(fs.join(root, 'meshes/broken.nif'), fixture.broken(), { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(
+      fs.join(root, 'Broken.esp'),
+      fixture.plugin { fixture.static('broken', 'broken.nif') },
+      { atomic = true, createParents = true }
     )
+    if not done then error(problem, 0) end
 
-    expect(cli.run { '--format', 'json', '--show', 'wont-load', jess.fs.join(root, 'Junk.esp') }).toBe(1)
-    expect(cli.run { '--format', 'json', '--show', 'wont-load', jess.fs.join(root, 'Broken.esp') }).toBe(1)
+    expect(cli.run { '--format', 'json', '--show', 'wont-load', fs.join(root, 'Junk.esp') }).toBe(1)
+    expect(cli.run { '--format', 'json', '--show', 'wont-load', fs.join(root, 'Broken.esp') }).toBe(1)
 
     -- A model that won't load isn't looked at with --no-meshes, so nothing fails.
-    expect(cli.run { '--format', 'json', '--no-meshes', jess.fs.join(root, 'Broken.esp') }).toBe(0)
+    expect(cli.run { '--format', 'json', '--no-meshes', fs.join(root, 'Broken.esp') }).toBe(0)
   end)
 end)
 

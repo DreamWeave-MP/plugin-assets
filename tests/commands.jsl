@@ -17,12 +17,15 @@ local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the suite needs a 
 
 --- A fresh folder under the scratch root holding `files` by their paths below it.
 local function folder(name: string, files: { [string]: string | buffer }?): string
-  local root = jess.fs.join(scratch, 'plugin-assets-commands', name)
-  if jess.fs.exists(root) then fs.remove(root, { recursive = true }) end
+  local root = fs.join(scratch, 'plugin-assets-commands', name)
+  if fs.exists(root) then fs.remove(root, { recursive = true }) end
 
-  jess.fs.createDir(root)
+  local done, problem = fs.mkdir(root, { recursive = true })
+  if not done then error(problem, 0) end
+
   for path, bytes in files or {} do
-    jess.fs.write(jess.fs.join(root, path), bytes)
+    local done, problem = fs.writeFile(fs.join(root, path), bytes, { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
   end
 
   return root
@@ -50,7 +53,7 @@ end
 local function canonical(path: string): string return fs.canonicalize(path) or path end
 
 suite.describe('jess plugin assets\' harness', function()
-  local built = fixture.build(jess.fs.join(scratch, 'plugin-assets-commands', 'harness'))
+  local built = fixture.build(fs.join(scratch, 'plugin-assets-commands', 'harness'))
 
   --- The request the command line made of `--show collision`, with `extra` over it.
   local function shown(extra: { [string]: unknown }?): commands.CheckResult
@@ -96,9 +99,9 @@ suite.describe('jess plugin assets\' harness', function()
     expect(#result.report.references).toBe(2)
     expect(meshPaths(result)).toEqual { 'meshes/rock.nif', 'meshes/textured.nif' }
     expect(result.report.usedFiles).toEqual {
-      { file = canonical(jess.fs.join(built.root, 'meshes/rock.nif')), path = 'meshes/rock.nif', inArchive = false },
+      { file = canonical(fs.join(built.root, 'meshes/rock.nif')), path = 'meshes/rock.nif', inArchive = false },
       {
-        file = canonical(jess.fs.join(built.root, 'meshes/textured.nif')),
+        file = canonical(fs.join(built.root, 'meshes/textured.nif')),
         path = 'meshes/textured.nif',
         inArchive = false,
       },
@@ -114,8 +117,8 @@ suite.describe('jess plugin assets\' harness', function()
   end)
 
   suite.it('counts a model that isn\'t anywhere as missing', function()
-    local removed = fixture.build(jess.fs.join(scratch, 'plugin-assets-commands', 'harness-missing'))
-    jess.fs.remove(jess.fs.join(removed.root, 'meshes/rock.nif'))
+    local removed = fixture.build(fs.join(scratch, 'plugin-assets-commands', 'harness-missing'))
+    fs.remove(fs.join(removed.root, 'meshes/rock.nif'))
 
     local result =
       commands.check { plugins = { removed.plugin }, show = 'collision', references = false, meshes = false }
@@ -155,30 +158,30 @@ suite.describe('lookups', function()
   suite.it('take a later data folder over an earlier one, and the plugin\'s own folder over both', function()
     local first, second, own = layers()
     local result = commands.check {
-      plugins = { jess.fs.join(own, 'Order.esp') },
+      plugins = { fs.join(own, 'Order.esp') },
       data = { first, second },
       meshes = false,
     }
 
     expect(result.sources).toEqual { first, second, own }
     expect(sourced(result)).toEqual {
-      `one.nif <- {jess.fs.join(second, 'meshes/one.nif')}`,
-      `two.nif <- {jess.fs.join(own, 'meshes/two.nif')}`,
-      `three.nif <- {jess.fs.join(first, 'meshes/three.nif')}`,
+      `one.nif <- {fs.join(second, 'meshes/one.nif')}`,
+      `two.nif <- {fs.join(own, 'meshes/two.nif')}`,
+      `three.nif <- {fs.join(first, 'meshes/three.nif')}`,
     }
   end)
 
   suite.it('leave a folder already named where it is, as jess-assets did', function()
     local first, second, own = layers()
     local result = commands.check {
-      plugins = { jess.fs.join(own, 'Order.esp') },
+      plugins = { fs.join(own, 'Order.esp') },
       data = { own, first, second, first },
       meshes = false,
     }
 
     -- The plugin's folder was named as data first, so the data folders after it win over it.
     expect(result.sources).toEqual { own, first, second }
-    expect(sourced(result)[2]).toBe(`two.nif <- {jess.fs.join(second, 'meshes/two.nif')}`)
+    expect(sourced(result)[2]).toBe(`two.nif <- {fs.join(second, 'meshes/two.nif')}`)
   end)
 
   suite.it('add each plugin\'s folder in the order the plugins are named', function()
@@ -193,15 +196,15 @@ suite.describe('lookups', function()
     })
 
     local result = commands.check {
-      plugins = { jess.fs.join(early, 'Early.esp'), jess.fs.join(late, 'Late.esp') },
+      plugins = { fs.join(early, 'Early.esp'), fs.join(late, 'Late.esp') },
       meshes = false,
     }
 
     expect(result.sources).toEqual { early, late }
     expect(result.report.summary.plugins).toEqual { 'Early.esp', 'Late.esp' }
     expect(sourced(result)).toEqual {
-      `shared.nif <- {jess.fs.join(late, 'meshes/shared.nif')}`,
-      `shared.nif <- {jess.fs.join(late, 'meshes/shared.nif')}`,
+      `shared.nif <- {fs.join(late, 'meshes/shared.nif')}`,
+      `shared.nif <- {fs.join(late, 'meshes/shared.nif')}`,
     }
   end)
 
@@ -211,14 +214,15 @@ suite.describe('lookups', function()
       ['Packed.esp'] = statics { { 'packed', 'packed.nif' }, { 'both', 'both.nif' } },
     })
 
-    local pack = jess.fs.join(own, 'packs/Pack.bsa')
+    local pack = fs.join(own, 'packs/Pack.bsa')
     local builder = archive.bsa.tes3.Builder.new()
     builder:addBytes('meshes/packed.nif', 'archived')
     builder:addBytes('meshes/both.nif', 'archived')
-    jess.fs.createDir(jess.fs.join(own, 'packs'))
+    local done, problem = fs.mkdir(fs.join(own, 'packs'), { recursive = true })
+    if not done then error(problem, 0) end
     builder:writePath(pack)
 
-    local plugin = jess.fs.join(own, 'Packed.esp')
+    local plugin = fs.join(own, 'Packed.esp')
     local result = commands.check { plugins = { plugin }, data = { loose, pack }, meshes = false }
     expect(result.sources).toEqual { loose, pack, own }
     expect(sourced(result)).toEqual { `packed.nif <- {pack}`, `both.nif <- {pack}` }
@@ -230,7 +234,7 @@ suite.describe('lookups', function()
     local reversed = commands.check { plugins = { plugin }, data = { pack, loose }, meshes = false }
     expect(sourced(reversed)).toEqual {
       `packed.nif <- {pack}`,
-      `both.nif <- {jess.fs.join(loose, 'meshes/both.nif')}`,
+      `both.nif <- {fs.join(loose, 'meshes/both.nif')}`,
     }
   end)
 end)
@@ -244,7 +248,7 @@ suite.describe('plugins', function()
     })
 
     local result = commands.check {
-      plugins = { jess.fs.join(root, 'Base.esm'), jess.fs.join(root, 'Mod.esp') },
+      plugins = { fs.join(root, 'Base.esm'), fs.join(root, 'Mod.esp') },
       meshes = false,
     }
 
@@ -260,10 +264,10 @@ suite.describe('plugins', function()
       ['Mod.omwscripts'] = 'PLAYER: scripts/there.lua\nGLOBAL: scripts/gone.lua\nCUSTOM scripts/flagless.lua\n',
     })
 
-    local result = commands.check { plugins = { jess.fs.join(root, 'Mod.omwscripts') } }
-    expect(result.plugins).toEqual { { name = 'Mod.omwscripts', path = jess.fs.join(root, 'Mod.omwscripts') } }
+    local result = commands.check { plugins = { fs.join(root, 'Mod.omwscripts') } }
+    expect(result.plugins).toEqual { { name = 'Mod.omwscripts', path = fs.join(root, 'Mod.omwscripts') } }
     expect(sourced(result)).toEqual {
-      `scripts/there.lua <- {jess.fs.join(root, 'scripts/there.lua')}`,
+      `scripts/there.lua <- {fs.join(root, 'scripts/there.lua')}`,
       'scripts/gone.lua <- nothing',
     }
     expect(result.report.summary.byCode).toEqual { missingScript = 1, omwscriptsError = 1 }
@@ -276,10 +280,11 @@ suite.describe('plugins', function()
       ['Good.esp'] = statics { { 'rock', 'rock.nif' } },
     })
 
-    jess.fs.createDir(jess.fs.join(root, 'Folder.esp'))
+    local done, problem = fs.mkdir(fs.join(root, 'Folder.esp'), { recursive = true })
+    if not done then error(problem, 0) end
 
-    local junk, good = jess.fs.join(root, 'Junk.esp'), jess.fs.join(root, 'Good.esp')
-    local directory = jess.fs.join(root, 'Folder.esp')
+    local junk, good = fs.join(root, 'Junk.esp'), fs.join(root, 'Good.esp')
+    local directory = fs.join(root, 'Folder.esp')
     local result = commands.check { plugins = { junk, good, directory } }
     local problem = `failed to read '{junk}': truncated record header at offset 0`
     expect(result.plugins[1]).toEqual { name = 'Junk.esp', path = junk, problem = problem }
@@ -301,7 +306,7 @@ suite.describe('plugins', function()
 
   suite.it('have their text read in the code page asked for', function()
     local root = folder('encoding', { ['Text.esp'] = statics { { 'st\xe0tic', 'gone.nif' } } })
-    local plugin = jess.fs.join(root, 'Text.esp')
+    local plugin = fs.join(root, 'Text.esp')
     local western = commands.check { plugins = { plugin }, meshes = false }
     local cyrillic = commands.check { plugins = { plugin }, meshes = false, encoding = 'win1251' }
     expect(western.report.findings[1].id).toBe 'stàtic'
@@ -314,7 +319,7 @@ suite.describe('plugins', function()
       ['Broken.esp'] = statics { { 'broken', 'broken.nif' } },
     })
 
-    local result = commands.check { plugins = { jess.fs.join(root, 'Broken.esp') }, show = 'wontLoad' }
+    local result = commands.check { plugins = { fs.join(root, 'Broken.esp') }, show = 'wontLoad' }
     expect(result.report.summary.meshesWontLoad).toBe(1)
     expect(result.report.summary.missing).toBe(0)
     expect(result.report.meshes[1].worst).toBe 'wontLoad'
@@ -329,7 +334,7 @@ suite.describe('refusals', function()
     ['Junk.bsa'] = 'not an archive',
   })
 
-  local plugin = jess.fs.join(root, 'Mod.esp')
+  local plugin = fs.join(root, 'Mod.esp')
 
   local function refused(request: { [string]: unknown }, message: string)
     expect(function() commands.check((request :: unknown) :: commands.CheckRequest) end).toThrow(message)
@@ -339,16 +344,16 @@ suite.describe('refusals', function()
     refused({ plugins = {} }, 'no plugins to check')
     refused({}, 'no plugins to check')
 
-    local missing = jess.fs.join(root, 'Gone.esp')
+    local missing = fs.join(root, 'Gone.esp')
     refused({ plugins = { plugin, missing } }, `'{missing}' doesn't exist; jess takes plugins by their path`)
   end)
 
   suite.it('raise for a data path that isn\'t there, or is no folder or archive', function()
-    local missing = jess.fs.join(root, 'nowhere')
+    local missing = fs.join(root, 'nowhere')
     refused({ plugins = { plugin }, data = { missing } }, `'{missing}' doesn't exist`)
 
     for _, name in { 'notes.txt', 'Junk.bsa', 'Mod.esp' } do
-      local path = jess.fs.join(root, name)
+      local path = fs.join(root, name)
       refused(
         { plugins = { plugin }, data = { path } },
         `'{path}' isn't a directory, NIF, KF, or archive`

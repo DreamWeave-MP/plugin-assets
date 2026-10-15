@@ -30,6 +30,9 @@ local references = require '@self/internal/references'
 local tes3 = require '@tes3'
 local vfs = require '@vfs'
 
+--- A file's place on disk as the key it is found by: its separators NUL, which no name holds.
+local PlaceKey = bytes.rules { replace = { ['/'] = '\0' } }
+
 --- How much a finding matters, most severe first: OpenMW refuses the file; it loads, but
 --- something is dropped or read differently than written; a file it refers to is missing;
 --- collision differs from what a model seems to ask for; it costs time or memory for nothing
@@ -517,7 +520,7 @@ local function usedFiles(used: { [string]: boolean }, lookup: vfs.VFS): { UsedFi
     local key = keys[onDisk]
     if not key then
       local place = fs.canonicalize(onDisk) or onDisk
-      key = bytes.translate(place, '/', '\0')
+      key = bytes.translate(place, PlaceKey)
       keys[onDisk] = key
 
       -- Two paths can be one place, by a link.
