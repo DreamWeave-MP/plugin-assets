@@ -646,7 +646,7 @@ local function scriptList(count: number): string
     if index % 8 == 0 then
       lines[index] = `# scripts of part {index}`
     elseif index % 32 == 5 then
-      lines[index] = `PLAYER: scripts/bench/part_{index}.jsl`
+      lines[index] = `PLAYER: scripts/bench/part_{index}.luau`
     elseif index % 32 == 21 then
       lines[index] = `scripts/bench/part_{index}.lua`
     else
