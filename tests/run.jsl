@@ -244,7 +244,7 @@ suite.describe('jess.plugin.assets\' contract', function()
 
   suite.it('keeps the findings without the references, and leaves the models alone when told to', function()
     local _, lookup = data('contract-options', RockFiles)
-    local inputs = { { name = 'Rocks.esp', plugin = plugin(Rocks) } }
+    local inputs: { pluginAssets.Input } = { { name = 'Rocks.esp', plugin = plugin(Rocks) } }
     local findingsOnly = pluginAssets.check(inputs, lookup, { references = false })
     expect(findingsOnly.references).toEqual {}
     expect(findingsOnly.usedFiles).toEqual {}
@@ -303,11 +303,13 @@ suite.describe('references', function()
       'Book',
       'Light',
     } do
-      table.insert(records, { type = name, id = name, mesh = `{name}.nif`, icon = `{name}.tga` })
+      local record: tes3.Value = { type = name, id = name, mesh = `{name}.nif`, icon = `{name}.tga` }
+      table.insert(records, record)
     end
 
     for _, name in { 'Door', 'Container', 'Activator', 'Creature', 'Npc' } do
-      table.insert(records, { type = name, id = name, mesh = `{name}.nif` })
+      local record: tes3.Value = { type = name, id = name, mesh = `{name}.nif` }
+      table.insert(records, record)
     end
 
     local report = check('items', records, nil, { meshes = false })
@@ -982,7 +984,12 @@ suite.describe('a load order', function()
 
     local context = openmw.new(fs.join(root, 'openmw.cfg'))
     local opened = loadOrder.open(context, { types = pluginAssets.recordTypes })
-    local inputs: { pluginAssets.Input } = { opened.plugins[1], opened.failures[1] }
+    -- What @load-order lists is an input to `check` as it is, though strict types it otherwise:
+    -- its records name more fields than an Input does, and leave out the ones Input makes optional.
+    local inputs: { pluginAssets.Input } = {
+      (opened.plugins[1] :: unknown) :: pluginAssets.Input,
+      (opened.failures[1] :: unknown) :: pluginAssets.Input,
+    }
     local report = pluginAssets.check(inputs, context:vfs())
     local pack = fs.join(root, 'data/Pack.bsa')
     local model = fs.join(root, 'data/meshes/x/rock.nif')
@@ -1074,7 +1081,7 @@ suite.describe('a load order', function()
       { type = 'MiscItem', id = 'lamp', icon = 'glow.tga' },
       { type = 'Sound', id = 'boom', soundPath = 'boom.wav' },
     }
-    local inputs = { { name = 'Test.esp', plugin = plugin(records) } }
+    local inputs: { pluginAssets.Input } = { { name = 'Test.esp', plugin = plugin(records) } }
     local report = pluginAssets.check(inputs, vfs.VFS.fromDirectories { root })
     expect(led(report)).toEqual {
       'video end.bik -> video/end.bik',
@@ -1207,7 +1214,7 @@ suite.describe('models', function()
     }
     local _, lookup = data('distant', files)
     local function models(version: number?): { string }
-      local inputs = { { name = 'Test.esp', plugin = plugin(records, version) } }
+      local inputs: { pluginAssets.Input } = { { name = 'Test.esp', plugin = plugin(records, version) } }
       return meshPaths(pluginAssets.check(inputs, lookup))
     end
 

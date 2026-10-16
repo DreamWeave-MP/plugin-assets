@@ -53,7 +53,7 @@ local function sizedBookartPath(
   if first.found then return first end
 
   local stem, extension = string.match(first.path, '^(.*)(%.[^.]*)$')
-  local sized = if stem
+  local sized = if stem and extension
     then string.format('%s_%d_%d%s', stem, width, height, extension)
     else string.format('%s_%d_%d', first.path, width, height)
   local second = bookartPath(sized, exists)

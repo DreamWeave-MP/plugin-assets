@@ -128,8 +128,9 @@ local function open(path: string, name: string, encoding: Encoding): pluginAsset
     return { name = name, scripts = tes3.lossyUtf8(buffer.tostring(bytes)) }
   end
 
+  local options: tes3.OpenOptions = { encoding = encoding, keep = keep }
   -- tes3.open throws on bytes that don't frame as records, and that's why the plugin wasn't read.
-  local opened, plugin = pcall(tes3.open, bytes, { encoding = encoding, keep = keep })
+  local opened, plugin = pcall(tes3.open, bytes, options)
   if not opened then return { name = name, problem = `failed to read '{path}': {plugin}` } end
 
   return { name = name, plugin = plugin :: tes3.Plugin }

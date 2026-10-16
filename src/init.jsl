@@ -136,8 +136,8 @@ export type Report = {
   usedFiles: { UsedFile },
 }
 
-local Severities: { Severity } =
-  table.freeze { 'wontLoad', 'broken', 'missingAsset', 'collision', 'performance', 'info' }
+local Severities =
+  table.freeze({ 'wontLoad', 'broken', 'missingAsset', 'collision', 'performance', 'info' } :: { Severity })
 
 local SeverityRank: { [string]: number } = {}
 for rank, severity in Severities do
@@ -184,11 +184,12 @@ local function resolveModel(reference: Reference, exists: (string) -> boolean, r
 
   -- Bethesda's placeholder for items that never appear in the world.
   if string.lower(references.trim(written)) == 'add world art' then
-    table.insert(findings, {
+    local finding: Found = {
       severity = 'info',
       code = 'placeholderModel',
       message = 'the model is the "Add World Art" placeholder, so dropping this item shows the error marker',
-    })
+    }
+    table.insert(findings, finding)
     return
   end
 
@@ -199,17 +200,19 @@ local function resolveModel(reference: Reference, exists: (string) -> boolean, r
     table.insert(models, mesh)
     resolution.resolved = mesh
   elseif string.sub(mesh, 1, 14) == 'meshes/meshes/' and exists(string.sub(mesh, 8)) then
-    table.insert(findings, {
+    local finding: Found = {
       severity = 'broken',
       code = 'doubledMeshesPrefix',
       message = `model "{written}" starts with meshes\\, so OpenMW looks for {mesh}; drop the prefix`,
-    })
+    }
+    table.insert(findings, finding)
   else
-    table.insert(findings, {
+    local finding: Found = {
       severity = 'missingAsset',
       code = 'missingMesh',
       message = `model "{written}" not found at {mesh}`,
-    })
+    }
+    table.insert(findings, finding)
   end
 
   -- getLODMeshName: paged objects load `<name><suffix>_<lod>` (lod 0-15) or `<name><suffix>` in
@@ -241,11 +244,12 @@ local function resolveModel(reference: Reference, exists: (string) -> boolean, r
     return
   end
 
-  table.insert(findings, {
+  local finding: Found = {
     severity = 'broken',
     code = 'missingAnimatedModel',
     message = `{animated} is missing, but OpenMW loads it for "{written}" because its .kf exists`,
-  })
+  }
+  table.insert(findings, finding)
 end
 
 type Lookup = { resolved: paths.Resolved, code: string, what: string }
@@ -305,31 +309,34 @@ local function resolveFile(reference: Reference, exists: (string) -> boolean, re
   if reference.kind == 'effectIcon' then
     local big = paths.bigIconPath(written, exists)
     if not big.found then
-      table.insert(findings, {
+      local finding: Found = {
         severity = 'missingAsset',
         code = 'missingBigIcon',
         message = `large icon for "{written}" not found (tried {table.concat(big.tried, ', ')})`,
-      })
+      }
+      table.insert(findings, finding)
     end
   end
 
   if not resolved.found then
-    table.insert(findings, {
+    local finding: Found = {
       severity = 'missingAsset',
       code = lookup.code,
       message = `{lookup.what} "{written}" not found (tried {table.concat(resolved.tried, ', ')})`,
-    })
+    }
+    table.insert(findings, finding)
     return
   end
 
   resolution.resolved = resolved.path
   if reference.kind ~= 'texture' or string.match(resolved.path, '%.([^./]*)$') == 'dds' then return end
 
-  table.insert(findings, {
+  local finding: Found = {
     severity = 'performance',
     code = 'uncompressedTexture',
     message = `"{resolved.path}" isn't a DDS file, so it loads uncompressed and has its mipmaps built at load time`,
-  })
+  }
+  table.insert(findings, finding)
 end
 
 local function resolve(reference: Reference, exists: (string) -> boolean): Resolution
@@ -344,11 +351,12 @@ local function resolve(reference: Reference, exists: (string) -> boolean): Resol
     if exists(path) then
       resolution.resolved = path
     else
-      table.insert(resolution.findings, {
+      local finding: Found = {
         severity = 'missingAsset',
         code = 'missingScript',
         message = `script "{reference.path}" not found`,
-      })
+      }
+      table.insert(resolution.findings, finding)
     end
   end
 
@@ -478,7 +486,7 @@ local function checkMeshes(
       file.worst = if kept[1] then kept[1].severity else nil
     end
 
-    table.insert(report.meshes, {
+    local mesh: MeshReport = {
       path = file.path,
       source = file.source,
       version = file.version,
@@ -489,7 +497,8 @@ local function checkMeshes(
       textures = file.textures,
       stats = file.stats,
       usedBy = usedBy,
-    })
+    }
+    table.insert(report.meshes, mesh)
 
     local codes: { [string]: boolean } = {}
     for _, finding in file.findings do
@@ -614,7 +623,7 @@ local function check(inputs: { Input }, lookup: vfs.VFS, options: Options?): Rep
   end
 
   for _, input in unreadable do
-    table.insert(report.findings, {
+    local finding: Finding = {
       severity = 'wontLoad',
       code = 'unreadablePlugin',
       message = input.problem :: string,
@@ -622,11 +631,12 @@ local function check(inputs: { Input }, lookup: vfs.VFS, options: Options?): Rep
       recordType = '',
       id = '',
       path = '',
-    })
+    }
+    table.insert(report.findings, finding)
   end
 
   for _, problem in found.problems do
-    table.insert(report.findings, {
+    local finding: Finding = {
       severity = 'broken',
       code = problem.code,
       message = problem.message,
@@ -634,7 +644,8 @@ local function check(inputs: { Input }, lookup: vfs.VFS, options: Options?): Rep
       recordType = problem.recordType,
       id = problem.id,
       path = '',
-    })
+    }
+    table.insert(report.findings, finding)
   end
 
   local function exists(path: string): boolean return lookup:contains(path) end

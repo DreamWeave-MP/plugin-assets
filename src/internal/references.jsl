@@ -74,7 +74,7 @@ local Item: { Field } = { { kind = 'mesh', field = 'mesh' }, { kind = 'icon', fi
 
 --- The fields that hold a file path, by record type, in the order jess-assets read them. Script
 --- text, book text, and script lists are read apart from these.
-local Files: { [string]: { Field } } = table.freeze {
+local Files = table.freeze({
   SOUN = { { kind = 'sound', field = 'soundPath' } },
   INFO = { { kind = 'voice', field = 'soundPath' } },
   MGEF = { { kind = 'effectIcon', field = 'icon' }, { kind = 'texture', field = 'texture' } },
@@ -99,7 +99,7 @@ local Files: { [string]: { Field } } = table.freeze {
   INGR = Item,
   ALCH = Item,
   BOOK = Item,
-}
+} :: { [string]: { Field } })
 
 --- What a record type that isn't in `Files` has of them.
 local NoFields = table.freeze({} :: { Field })
@@ -522,7 +522,7 @@ local function ofPlugin(plugin: tes3.Plugin, name: string): Found
     end
 
     for _, image in images do
-      table.insert(found.references, {
+      local reference: Reference = {
         plugin = name,
         recordType = tag,
         id = id,
@@ -530,7 +530,8 @@ local function ofPlugin(plugin: tes3.Plugin, name: string): Found
         path = image.path,
         width = image.width,
         height = image.height,
-      })
+      }
+      table.insert(found.references, reference)
     end
   end
 
@@ -565,13 +566,14 @@ local function ofScriptList(text: string, name: string): Found
       continue
     end
 
-    table.insert(found.references, {
+    local reference: Reference = {
       plugin = name,
       recordType = 'omwscripts',
       id = id,
       kind = 'script',
       path = trimStart(string.sub(line, (colon :: number) + 1)),
-    })
+    }
+    table.insert(found.references, reference)
   end
 
   return found

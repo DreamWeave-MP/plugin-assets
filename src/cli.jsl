@@ -104,18 +104,18 @@ can't be read, or a model won't load, after the report is printed; 8 the command
 used; 9 the check couldn't be made.]]
 
 --- `--show`'s values, and the severity each stands for; `files` stands for none.
-local Shows: { [string]: pluginAssets.Severity | 'files' } = table.freeze {
-  ['wont-load'] = 'wontLoad' :: 'wontLoad',
-  broken = 'broken' :: 'broken',
-  ['missing-asset'] = 'missingAsset' :: 'missingAsset',
-  collision = 'collision' :: 'collision',
-  performance = 'performance' :: 'performance',
-  info = 'info' :: 'info',
-  files = 'files' :: 'files',
-}
+local Shows = table.freeze({
+  ['wont-load'] = 'wontLoad',
+  broken = 'broken',
+  ['missing-asset'] = 'missingAsset',
+  collision = 'collision',
+  performance = 'performance',
+  info = 'info',
+  files = 'files',
+} :: { [string]: pluginAssets.Severity | 'files' })
 
 --- The flags that take a value: what each one's value is, and the values it can be.
-local Valued: { [string]: { what: string, values: { string }? } } = table.freeze {
+local Valued = table.freeze({
   ['--show'] = {
     what = 'a severity, or files',
     values = { 'wont-load', 'broken', 'missing-asset', 'collision', 'performance', 'info', 'files' },
@@ -123,14 +123,14 @@ local Valued: { [string]: { what: string, values: { string }? } } = table.freeze
   ['--data'] = { what = 'a path' },
   ['--encoding'] = { what = 'an encoding', values = { 'win1250', 'win1251', 'win1252' } },
   ['--format'] = { what = 'a format', values = { 'yaml', 'json', 'toml' } },
-}
+} :: { [string]: { what: string, values: { string }? } })
 
 --- The flags that take none.
-local Switches: { [string]: boolean } =
-  table.freeze { ['--verbose'] = true, ['--no-meshes'] = true, ['--help'] = true, ['--version'] = true }
+local Switches = table.freeze(
+  { ['--verbose'] = true, ['--no-meshes'] = true, ['--help'] = true, ['--version'] = true } :: { [string]: boolean }
+)
 
-local Shorts: { [string]: string } =
-  table.freeze { ['v'] = '--verbose', ['h'] = '--help', ['V'] = '--version' }
+local Shorts = table.freeze({ ['v'] = '--verbose', ['h'] = '--help', ['V'] = '--version' } :: { [string]: string })
 
 local function out(text: string) process.write('stdout', text) end
 
