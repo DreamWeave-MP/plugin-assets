@@ -1,0 +1,21 @@
+# plugin-assets as a DreamWeave project: a Jess package. `jess` names the Package Source it
+# publishes, the jess.toml at the repository root, and each release tag `plugin_assets-<version>` is one
+# version of the package, packed by the Mod Template from that tag; every push packs a
+# development build.
+id = "5ce03451-8745-40ba-abb9-a9dbde31b493"
+slug = "plugin_assets"
+type = "tool"
+status = "active"
+
+[[maintainers]]
+name = "DreamWeave"
+url = "https://github.com/DreamWeave-MP"
+
+[package]
+format = "jpk"
+jess = "org.dreamweave.plugin-assets"
+
+[[releases]]
+version = "0.1.0"
+date = 2026-10-21
+summary = "First release published as a DreamWeave project."
