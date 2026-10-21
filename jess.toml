@@ -17,7 +17,7 @@ tests = ["tests/run.jsl", "tests/commands.jsl", "tests/cli.jsl", "tests/style.js
 # hands the package what a real load order opens: a Context's plugins and its VFS.
 [dev-dependencies]
 "org.dreamweave.nif" = "0.1"
-"org.dreamweave.dream-archive" = "0.1"
+"org.dreamweave.dream-archive" = "2"
 "org.dreamweave.openmw-content" = "0.1"
 "org.dreamweave.openmw-install" = "0.1"
 
