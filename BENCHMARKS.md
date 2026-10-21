@@ -5,7 +5,7 @@ references listed or only the findings, counted as a load order or as plugins on
 down to a severity), over a patch whose models go through the NIF check, over one kind of record
 at a time, and over a script list; `commands.check` over plugins named by path; the argument list
 read; and every document the command line prints, in each format. The plugins are built in the
-bench with `@tes3`, in the mix a master has at about a tenth of Morrowind.esm's size: 4,905
+bench with `@esm`, in the mix a master has at about a tenth of Morrowind.esm's size: 4,905
 records, three in five of them dialogue responses, a third of those with a result script; then
 statics, NPCs that share a model per race and sex, body parts, containers, lights, books, items
 that share models and icons, and scripts of some forty lines. The data folder in scratch holds
@@ -141,14 +141,14 @@ record's winner by an `@dream/intern` pool of ids measured no faster than the lo
 because a pool made for one check meets every id for the first time.
 
 What didn't move, and what is left. The command line run once is 340 ms before it does anything:
-loading `@vfs` (about 145 ms), `@tes3` (115 ms), and `@nif-assets` with `@nif` (80 ms); this
+loading `@vfs` (about 145 ms), `@esm` (115 ms), and `@nif-assets` with `@nif` (80 ms); this
 package's own modules are 19 ms of it, 2 ms more than before. Every document is written by
 `@jess/data/value`'s encoder. Of a check that lists the files used, half is now
 `fs.canonicalize`, once a loose file at about 20 µs: 26 ms of the 48. A file's canonical path is
 its folder's and its name only where the file is no link and the name is spelled as the disk
 spells it, and what a canonical path is on Windows this package can't say from here, so it is
 left as it was; `@vfs` knows its roots and could answer for a whole folder at once. The rest is
-`@tes3` decoding the records that do name files, `@vfs` answering whether a path exists
+`@esm` decoding the records that do name files, `@vfs` answering whether a path exists
 (seventeen times for each distant model that might have levels of detail), and `@nif-assets`
 searching for icons and textures. A model's NIF check is `@nif-assets`' time.
 

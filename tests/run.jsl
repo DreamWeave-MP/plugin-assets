@@ -1,17 +1,17 @@
 --!strict
 --!native
--- plugin-assets' cases, on plugins built with `@tes3` and data folders built in scratch. The first
+-- plugin-assets' cases, on plugins built with `@esm` and data folders built in scratch. The first
 -- group is jess's own contract for `jess.plugin.assets` (`contracts/assets` in jess's history):
 -- the same model, texture, and plugin, and the report it pinned. The rest take one asset kind,
 -- finding, or load-order rule each. Textures, sounds, and scripts are only names here, since a
 -- lookup never opens one; models are real, since each one found is checked.
 local archive = require '@dream-archive'
 local fs = require '@dream/fs'
-local loadOrder = require '@load-order'
+local loadOrder = require '@openmw-content'
 local nif = require '@nif'
-local openmw = require '@openmw'
+local openmw = require '@openmw-install'
 local pluginAssets = require '@plugin-assets'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local test = require '@jess/test'
 local vfs = require '@vfs'
 
@@ -56,7 +56,7 @@ local function defects(): buffer
   return file:save()
 end
 
---- A plugin holding `records`, as `@tes3` builds one: a version 1.3 header, or `version`.
+--- A plugin holding `records`, as `@esm` builds one: a version 1.3 header, or `version`.
 local function plugin(records: { tes3.Value }, version: number?): tes3.Plugin
   local built = tes3.new()
   for _, record in records do
@@ -959,7 +959,7 @@ suite.describe('a load order', function()
     expect(replaced.findings).toEqual {}
   end)
 
-  suite.it('reads what @load-order opened, over the configuration\'s VFS', function()
+  suite.it('reads what @openmw-content opened, over the configuration\'s VFS', function()
     local root = fs.join(scratch, 'plugin-assets', 'configured')
     if fs.exists(root) then fs.remove(root) end
 
@@ -984,7 +984,7 @@ suite.describe('a load order', function()
 
     local context = openmw.new(fs.join(root, 'openmw.cfg'))
     local opened = loadOrder.open(context, { types = pluginAssets.recordTypes })
-    -- What @load-order lists is an input to `check` as it is, though strict types it otherwise:
+    -- What @openmw-content lists is an input to `check` as it is, though strict types it otherwise:
     -- its records name more fields than an Input does, and leave out the ones Input makes optional.
     local inputs: { pluginAssets.Input } = {
       (opened.plugins[1] :: unknown) :: pluginAssets.Input,
@@ -1218,7 +1218,7 @@ suite.describe('models', function()
       return meshPaths(pluginAssets.check(inputs, lookup))
     end
 
-    -- `@tes3` builds a version 1.3 plugin, as Morrowind's are.
+    -- `@esm` builds a version 1.3 plugin, as Morrowind's are.
     expect(models()).toEqual {
       'meshes/tower.nif',
       'meshes/tower_dist.nif',

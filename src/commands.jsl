@@ -32,7 +32,7 @@ severity that doesn't exist.
 
 local fs = require '@dream/fs'
 local pluginAssets = require '@plugin-assets'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local vfs = require '@vfs'
 
 --- The code page a plugin's text is in.

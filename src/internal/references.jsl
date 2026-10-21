@@ -11,7 +11,7 @@ reads them; the Lua scripts a `LUAL` record or an `.omwscripts` file lists.
 ]]
 
 local bytes = require '@dream/bytes'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 --- What a record field names, which decides how OpenMW looks it up: a model under `meshes`,
 --- used as is; a model for a class OpenMW animates, whose `x`-prefixed copy is used when its
