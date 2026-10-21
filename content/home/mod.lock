@@ -1,0 +1,53 @@
+{
+  "schema_version": "3",
+  "document": "lock",
+  "project": "5ce03451-8745-40ba-abb9-a9dbde31b493",
+  "note": "Written by CI when a release tag is pushed: what each published release's archive contains. Do not edit.",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "locked_from": "3fb7f02f3bf14eb6083428ebecb67232f4d59218",
+      "artifacts": [
+        {
+          "id": "jpk",
+          "format": "jpk",
+          "filename": "org.dreamweave.plugin-assets-0.1.0.jpk",
+          "media_type": "application/vnd.jess.jpk",
+          "size": 74352,
+          "digests": {
+            "sha256": "ff4e909fb0d2087a62b3e00f488958878918fd676be12bc34f7f7b46cc4ce997"
+          },
+          "jess": {
+            "package": "org.dreamweave.plugin-assets",
+            "jess_api": "1",
+            "content_digest": "f48471c4d5d08a61f2f68cf8c709963aed178d719b287d31a0dc1510ee4cb56d",
+            "dependencies": {
+              "org.dreamweave.esm": "0.1",
+              "org.dreamweave.nif-assets": "0.1",
+              "org.dreamweave.vfs": "2"
+            }
+          }
+        }
+      ],
+      "runtimes": {},
+      "platforms": [],
+      "provides": [],
+      "relationships": [],
+      "components": [
+        {
+          "id": "main",
+          "name": "plugin-assets",
+          "path": ".",
+          "required": true,
+          "default": true,
+          "requires": [],
+          "conflicts": [],
+          "suggested_with": []
+        }
+      ],
+      "groups": [],
+      "extensions": {},
+      "critical_extensions": []
+    }
+  ]
+}
